@@ -36,7 +36,8 @@
     "test:supabase": "tsx scripts/test-supabase.ts",
     "test:risk": "tsx scripts/test-risk-manager.ts",
     "test:api-football": "tsx scripts/test-api-football.ts",
-    "test:market-matcher": "tsx scripts/test-market-matcher.ts"
+    "test:market-matcher": "tsx scripts/test-market-matcher.ts",
+    "test:trade-executor": "tsx scripts/test-trade-executor.ts"
   },
   "keywords": [
     "polymarket",
