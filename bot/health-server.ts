@@ -117,8 +117,12 @@ export function startHealthServer(port: number): void {
     log.error('Health server error', { error: String(err) });
   });
 
-  server.listen(port, () => {
-    log.info('Health server listening', { port, endpoints: ['/health', '/status'] });
+  // Bind to 0.0.0.0 so Railway (and any container host) can route external
+  // traffic to the process. Binding to localhost / 127.0.0.1 is invisible
+  // outside the container and will cause Railway health checks to fail.
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`Health server ready on 0.0.0.0:${port}`);
+    log.info('Health server listening', { port, host: '0.0.0.0', endpoints: ['/health', '/status'] });
   });
 }
 

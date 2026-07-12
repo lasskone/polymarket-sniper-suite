@@ -8,13 +8,18 @@
  * NOTE: src/index.ts is the SDK barrel; this file is the bot orchestrator.
  *
  * Startup sequence:
- *   1. Load + validate config (fatal on error)
- *   2. Start health server immediately (Railway needs /health early)
- *   3. Verify Supabase connection (non-fatal warning if unavailable)
- *   4. Initialize shared services (RiskManager)
- *   5. Start enabled modules concurrently via Promise.allSettled()
- *   6. Periodic status log every 5 minutes
- *   7. Graceful shutdown on SIGTERM / SIGINT
+ *   1. Register uncaughtException / unhandledRejection handlers
+ *   2. Start health server immediately (sync, binds to 0.0.0.0)
+ *   3. Load + validate config (fatal on error)
+ *   4. Verify Supabase connection (non-fatal warning if unavailable)
+ *   5. Initialize shared services (RiskManager)
+ *   6. Start enabled modules concurrently via Promise.allSettled()
+ *   7. Periodic status log every 5 minutes
+ *   8. Graceful shutdown on SIGTERM / SIGINT
+ *
+ * The health server is started at step 2 — BEFORE any async work — so
+ * Railway's health check passes during startup even if Supabase or a
+ * module takes time to initialise.
  */
 
 import { config as dotenvConfig } from 'dotenv';
@@ -34,6 +39,37 @@ import {
   updateBotStatus,
   incrementErrors,
 } from './health-server.js';
+
+// ---------------------------------------------------------------------------
+// Step 1: Error handlers — registered before anything else so no exception
+//         can silently kill the process (and take the health server with it).
+// ---------------------------------------------------------------------------
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  incrementErrors();
+  // Don't exit — keep the bot running
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+  incrementErrors();
+});
+
+// ---------------------------------------------------------------------------
+// Step 2: Start health server IMMEDIATELY — synchronous call, no awaiting.
+//         Railway health checks begin as soon as the container starts, so
+//         this must happen before any async I/O (Supabase, APIs, etc.).
+// ---------------------------------------------------------------------------
+
+const PORT = parseInt(process.env.PORT || '8080', 10);
+console.log(`Starting health server on port ${PORT}`);
+startHealthServer(PORT);
+// "Health server ready" is logged inside startHealthServer's listen callback.
+
+// ---------------------------------------------------------------------------
+// Logger — initialised after health server so it can't block step 2.
+// ---------------------------------------------------------------------------
 
 const log = createLogger('main');
 
@@ -66,17 +102,6 @@ function requestShutdown(signal: string): void {
 process.on('SIGTERM', () => requestShutdown('SIGTERM'));
 process.on('SIGINT',  () => requestShutdown('SIGINT'));
 
-process.on('uncaughtException', (err) => {
-  log.error('Uncaught exception', { error: err.message, stack: err.stack });
-  incrementErrors();
-  // Don't exit — keep the bot running
-});
-
-process.on('unhandledRejection', (reason) => {
-  log.error('Unhandled promise rejection', { reason: String(reason) });
-  incrementErrors();
-});
-
 // ---------------------------------------------------------------------------
 // Module runner — wraps a module so crashes restart it after a delay
 // ---------------------------------------------------------------------------
@@ -90,7 +115,7 @@ async function runWithRestart(
     try {
       log.info(`Module starting`, { module: name });
       await fn();
-      // If fn() returns normally (stub module), just exit loop — don't loop forever
+      // If fn() returns normally (stub module), exit loop — don't spin forever
       log.info(`Module exited cleanly`, { module: name });
       return;
     } catch (err) {
@@ -129,19 +154,20 @@ function startStatusReporter(activeModules: string[]): NodeJS.Timeout {
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Main — all async work lives here; health server is already running above.
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  // ── 1. Load config ────────────────────────────────────────────────────────
+  // ── 3. Load config ────────────────────────────────────────────────────────
+  console.log('Loading config...');
   let cfg: ReturnType<typeof loadConfig>;
   try {
     cfg = loadConfig();
   } catch (err) {
-    // Config errors are fatal — can't start without valid config
     console.error('[FATAL] Config failed to load:', String(err));
     process.exit(1);
   }
+  console.log('Config loaded');
 
   log.info('Starting polymarket-sniper-suite', {
     version:     '0.4.3',
@@ -155,24 +181,22 @@ async function main(): Promise<void> {
     },
   });
 
-  // ── 2. Start health server immediately ───────────────────────────────────
-  // Railway needs /health to respond quickly during deployment checks.
-  const port = Number(process.env.PORT ?? 8080);
-  startHealthServer(port);
-
-  // ── 3. Supabase connection (non-fatal) ────────────────────────────────────
+  // ── 4. Supabase connection (non-fatal) ────────────────────────────────────
+  console.log('Connecting to Supabase...');
   const supabase = getSupabaseClient();
   try {
     await verifySupabaseConnection();
+    console.log('Supabase connected');
     log.info('Supabase connection verified');
   } catch (err) {
+    console.warn('Supabase connection failed — trades will not be persisted');
     log.warn('Supabase connection failed — trades will not be persisted', {
       error: String(err),
     });
     // Continue — bot can still run in paper mode without Supabase
   }
 
-  // ── 4. Shared services ────────────────────────────────────────────────────
+  // ── 5. Shared services ────────────────────────────────────────────────────
   const riskManager = createRiskManager(
     {
       maxPositionSizeUsdc:      cfg.maxPositionSizeUsdc,
@@ -186,7 +210,7 @@ async function main(): Promise<void> {
     supabase,
   );
 
-  // ── 5. Resolve enabled / disabled modules ─────────────────────────────────
+  // ── 6. Resolve enabled / disabled modules ─────────────────────────────────
   const activeModules:   string[] = [];
   const disabledModules: string[] = [];
 
@@ -226,7 +250,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // ── 6. Push state to health server ───────────────────────────────────────
+  // ── 7. Push state to health server ───────────────────────────────────────
   updateBotStatus({
     activeModules,
     disabledModules,
@@ -240,10 +264,11 @@ async function main(): Promise<void> {
     });
   }
 
-  // ── 7. Start periodic status reporter ────────────────────────────────────
+  // ── 8. Start periodic status reporter ────────────────────────────────────
   const statusTimer = startStatusReporter(activeModules);
 
-  // ── 8. Launch enabled modules concurrently ────────────────────────────────
+  // ── 9. Launch enabled modules concurrently ────────────────────────────────
+  console.log('Starting modules...');
   const modulePromises = moduleDefinitions
     .filter((m) => m.enabled)
     .map((m) => runWithRestart(m.name, m.run));
