@@ -34,7 +34,8 @@
     "example:trending-arb": "tsx examples/12-trending-arb-monitor.ts",
     "example:arb-service": "tsx examples/13-arbitrage-service.ts",
     "test:supabase": "tsx scripts/test-supabase.ts",
-    "test:risk": "tsx scripts/test-risk-manager.ts"
+    "test:risk": "tsx scripts/test-risk-manager.ts",
+    "test:api-football": "tsx scripts/test-api-football.ts"
   },
   "keywords": [
     "polymarket",
@@ -59,6 +60,7 @@
     "@polymarket/real-time-data-client": "^1.4.0",
     "@supabase/supabase-js": "^2.110.2",
     "@types/ws": "^8.18.1",
+    "axios": "^1.18.1",
     "bottleneck": "^2.19.5",
     "dotenv": "^17.2.3",
     "ethers": "5",

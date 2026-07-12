@@ -1,72 +1,114 @@
 /**
- * Latency Sniper module entry point.
+ * Latency Sniper — main orchestration loop.
  *
- * Orchestrates:
- *   1. EventDetector  — polls API-Football for live match events
- *   2. MarketMatcher  — maps events to Polymarket contracts
- *   3. Risk Manager   — gates order size / daily limits
- *   4. Order execution (paper or live)
+ * Each tick:
+ *   1. pollLiveMatches()  → new events since last tick
+ *   2. Log every new event (market matching + trade execution: next step)
+ *   3. Sleep for pollIntervalMs
  */
 
-import { latencySniperConfig } from './config.js';
-import { EventDetector } from './event-detector.js';
-import { MarketMatcher } from './market-matcher.js';
+import { config as dotenvConfig } from 'dotenv';
+dotenvConfig();
+
+import { loadConfig } from '../shared/config.js';
+import { loadLatencySniperConfig } from './config.js';
+import { EventDetector, type NewEvent } from './event-detector.js';
 import { createLogger } from '../shared/logger.js';
 
-const CLOB_API_BASE = 'https://clob.polymarket.com';
 const log = createLogger('latency-sniper');
 
 export async function runLatencySniper(): Promise<void> {
-  if (!latencySniperConfig.enabled) {
+  const mainConfig = loadConfig();
+  const cfg = loadLatencySniperConfig(mainConfig);
+
+  if (!cfg.enabled) {
     log.info('Module disabled — set ENABLE_LATENCY_SNIPER=true to activate.');
     return;
   }
 
-  if (!latencySniperConfig.apiFootballKey) {
-    throw new Error('[LatencySniper] API_FOOTBALL_KEY is required but not set.');
-  }
+  log.info('Starting latency sniper', {
+    tradingMode: cfg.tradingMode,
+    pollIntervalMs: cfg.pollIntervalMs,
+    targetLeagues: cfg.targetLeagues,
+    targetEventTypes: cfg.targetEventTypes,
+    maxApiCallsPerMinute: cfg.maxApiCallsPerMinute,
+  });
 
-  log.info('Starting');
+  const detector = new EventDetector(cfg);
 
-  const detector = new EventDetector(latencySniperConfig.apiFootballKey);
-  const matcher = new MarketMatcher(CLOB_API_BASE, latencySniperConfig.apiFootballKey);
-
-  const seen = new Set<string>();
+  let tickCount = 0;
 
   while (true) {
+    tickCount++;
+    const tickStart = Date.now();
+
     try {
-      const fixtureIds = await detector.getLiveFixtures();
-      log.debug('Live fixtures polled', { count: fixtureIds.length });
+      const newEvents = await detector.pollLiveMatches();
 
-      for (const id of fixtureIds) {
-        const events = await detector.getFixtureEvents(id);
-        for (const event of events) {
-          const key = `${event.fixtureId}-${event.eventType}-${event.minute}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
+      if (newEvents.length === 0) {
+        log.debug('Tick complete — no new events', { tick: tickCount });
+      }
 
-          log.info('New event detected', { event });
-          const targets = await matcher.findTargets(event);
-
-          for (const target of targets) {
-            if (target.edgePct < latencySniperConfig.minProfitThreshold) continue;
-            log.info('Target identified', {
-              conditionId: target.conditionId,
-              side: target.side,
-              edgePct: target.edgePct,
-            });
-
-            if (latencySniperConfig.tradingMode === 'paper') {
-              log.info('PAPER: would place order here');
-            }
-            // live order execution wired in via the shared order client
-          }
-        }
+      for (const ne of newEvents) {
+        await handleNewEvent(ne, cfg.tradingMode, cfg.minProfitThreshold);
       }
     } catch (err) {
-      log.error('Error in poll loop', { error: String(err) });
+      log.error('Unhandled error in poll loop', { error: String(err), tick: tickCount });
     }
 
-    await new Promise((r) => setTimeout(r, latencySniperConfig.pollIntervalMs));
+    // Sleep for the remainder of the interval
+    const elapsed = Date.now() - tickStart;
+    const sleepMs = Math.max(0, cfg.pollIntervalMs - elapsed);
+    await sleep(sleepMs);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Event handler — logs event, placeholder for market matching + execution
+// ---------------------------------------------------------------------------
+
+async function handleNewEvent(
+  ne: NewEvent,
+  tradingMode: 'paper' | 'live',
+  minProfitThreshold: number,
+): Promise<void> {
+  const { match, event } = ne;
+
+  log.info('New event — evaluating opportunity', {
+    fixtureId: match.fixtureId,
+    league: match.league,
+    match: `${match.homeTeam.name} ${match.score.home}–${match.score.away} ${match.awayTeam.name}`,
+    eventType: event.type,
+    eventDetail: event.detail,
+    team: event.team.name,
+    player: event.player.name,
+    minute: event.time,
+  });
+
+  // ── TODO (next step): Market matching ─────────────────────────────────────
+  // const targets = await marketMatcher.findTargets(ne);
+  //
+  // ── TODO (next step): Trade execution ─────────────────────────────────────
+  // for (const target of targets) {
+  //   if (target.edgePct < minProfitThreshold) continue;
+  //   const check = await riskManager.checkOrder(...);
+  //   if (!check.allowed) { log.warn(...); continue; }
+  //   if (tradingMode === 'paper') { log.info('PAPER trade', target); continue; }
+  //   await orderClient.place(target, check.adjustedSize);
+  // }
+
+  log.debug('Opportunity evaluation complete (market matching not yet wired)', {
+    fixtureId: match.fixtureId,
+    eventType: event.type,
+    tradingMode,
+    minProfitThreshold,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }

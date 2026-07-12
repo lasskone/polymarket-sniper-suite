@@ -1,9 +1,15 @@
 /**
- * MarketMatcher — maps a live MatchEvent to candidate Polymarket
- * markets and returns the best order target.
+ * MarketMatcher — maps a live match NewEvent to candidate Polymarket
+ * markets and returns the best order targets.
+ *
+ * Stub: full implementation queries the CLOB gamma markets endpoint
+ * and filters by keyword match on team names + event type.
  */
 
-import type { MatchEvent } from './event-detector.js';
+import type { NewEvent } from './event-detector.js';
+import { createLogger } from '../shared/logger.js';
+
+const log = createLogger('market-matcher');
 
 export interface MarketTarget {
   conditionId: string;
@@ -15,22 +21,23 @@ export interface MarketTarget {
 }
 
 export class MarketMatcher {
-  private clobApiBase: string;
-  private apiKey: string;
-
-  constructor(clobApiBase: string, apiKey: string) {
-    this.clobApiBase = clobApiBase;
-    this.apiKey = apiKey;
-  }
+  constructor(
+    private readonly clobApiBase: string,
+    private readonly apiKey: string,
+  ) {}
 
   /**
-   * Search for open Polymarket markets related to a fixture.
+   * Search for open Polymarket markets related to a fixture event.
    * Returns candidate markets sorted by edge (highest first).
    */
-  async findTargets(event: MatchEvent): Promise<MarketTarget[]> {
-    // Stub — full implementation queries the CLOB gamma markets endpoint
-    // and filters by keyword match on team names + event type.
-    console.log(`[MarketMatcher] Searching markets for event:`, event);
+  async findTargets(ne: NewEvent): Promise<MarketTarget[]> {
+    log.debug('Searching markets for event', {
+      fixtureId: ne.match.fixtureId,
+      eventType: ne.event.type,
+      eventDetail: ne.event.detail,
+      team: ne.event.team.name,
+    });
+    // TODO: query CLOB gamma endpoint, match by team names + event type
     return [];
   }
 }
