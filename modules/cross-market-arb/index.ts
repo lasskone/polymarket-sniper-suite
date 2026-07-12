@@ -7,17 +7,17 @@
  */
 
 import { crossMarketArbConfig } from './config.js';
-import { logger } from '../shared/logger.js';
+import { createLogger } from '../shared/logger.js';
+
+const log = createLogger('cross-market-arb');
 
 export async function runCrossMarketArb(): Promise<void> {
   if (!crossMarketArbConfig.enabled) {
-    logger.info(
-      '[CrossMarketArb] Module disabled — set ENABLE_CROSS_MARKET_ARB=true to activate.',
-    );
+    log.info('Module disabled — set ENABLE_CROSS_MARKET_ARB=true to activate.');
     return;
   }
 
-  logger.info('[CrossMarketArb] Starting cross-market arbitrage scanner...');
+  log.info('Starting cross-market arbitrage scanner');
 
   // TODO:
   //   1. Build a market-pair map: Polymarket conditionId <-> Kalshi marketTicker.
@@ -27,5 +27,5 @@ export async function runCrossMarketArb(): Promise<void> {
   //      b. Enforce that combined position ≤ maxPositionSizeUsdc.
   //   4. Monitor legs for fill confirmation; log to Supabase.
 
-  logger.info('[CrossMarketArb] Stub — awaiting market-pair registry and Kalshi client.');
+  log.info('Stub — awaiting market-pair registry and Kalshi client');
 }

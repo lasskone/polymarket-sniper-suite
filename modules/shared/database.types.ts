@@ -1,5 +1,9 @@
 /**
  * Hand-written TypeScript types matching supabase/schema.sql.
+ *
+ * Must satisfy Supabase's GenericTable constraint:
+ *   { Row, Insert, Update, Relationships: GenericRelationship[] }
+ *
  * Regenerate automatically once schema stabilises:
  *   npx supabase gen types typescript --project-id <ref> > modules/shared/database.types.ts
  */
@@ -11,6 +15,15 @@ export type Json =
   | null
   | { [key: string]: Json | undefined }
   | Json[];
+
+// Mirrors GenericRelationship from @supabase/postgrest-js
+type Relationship = {
+  foreignKeyName: string;
+  columns: string[];
+  isOneToOne?: boolean;
+  referencedRelation: string;
+  referencedColumns: string[];
+};
 
 export interface Database {
   public: {
@@ -53,6 +66,7 @@ export interface Database {
           executed_at?: string | null;
         };
         Update: Partial<Database['public']['Tables']['trades']['Insert']>;
+        Relationships: Relationship[];
       };
 
       opportunities: {
@@ -89,6 +103,7 @@ export interface Database {
           expires_at?: string | null;
         };
         Update: Partial<Database['public']['Tables']['opportunities']['Insert']>;
+        Relationships: Relationship[];
       };
 
       performance: {
@@ -125,6 +140,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database['public']['Tables']['performance']['Insert']>;
+        Relationships: Relationship[];
       };
 
       risk_management: {
@@ -155,6 +171,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database['public']['Tables']['risk_management']['Insert']>;
+        Relationships: Relationship[];
       };
 
       market_snapshots: {
@@ -181,7 +198,13 @@ export interface Database {
           captured_at?: string;
         };
         Update: Partial<Database['public']['Tables']['market_snapshots']['Insert']>;
+        Relationships: Relationship[];
       };
     };
+    // Required by Supabase's GenericSchema
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
   };
 }

@@ -11,13 +11,14 @@
 import { latencySniperConfig } from './config.js';
 import { EventDetector } from './event-detector.js';
 import { MarketMatcher } from './market-matcher.js';
-import { logger } from '../shared/logger.js';
+import { createLogger } from '../shared/logger.js';
 
 const CLOB_API_BASE = 'https://clob.polymarket.com';
+const log = createLogger('latency-sniper');
 
 export async function runLatencySniper(): Promise<void> {
   if (!latencySniperConfig.enabled) {
-    logger.info('[LatencySniper] Module disabled — set ENABLE_LATENCY_SNIPER=true to activate.');
+    log.info('Module disabled — set ENABLE_LATENCY_SNIPER=true to activate.');
     return;
   }
 
@@ -25,7 +26,7 @@ export async function runLatencySniper(): Promise<void> {
     throw new Error('[LatencySniper] API_FOOTBALL_KEY is required but not set.');
   }
 
-  logger.info('[LatencySniper] Starting...');
+  log.info('Starting');
 
   const detector = new EventDetector(latencySniperConfig.apiFootballKey);
   const matcher = new MarketMatcher(CLOB_API_BASE, latencySniperConfig.apiFootballKey);
@@ -35,7 +36,7 @@ export async function runLatencySniper(): Promise<void> {
   while (true) {
     try {
       const fixtureIds = await detector.getLiveFixtures();
-      logger.info(`[LatencySniper] Live fixtures: ${fixtureIds.length}`);
+      log.debug('Live fixtures polled', { count: fixtureIds.length });
 
       for (const id of fixtureIds) {
         const events = await detector.getFixtureEvents(id);
@@ -44,24 +45,26 @@ export async function runLatencySniper(): Promise<void> {
           if (seen.has(key)) continue;
           seen.add(key);
 
-          logger.info(`[LatencySniper] New event detected: ${JSON.stringify(event)}`);
+          log.info('New event detected', { event });
           const targets = await matcher.findTargets(event);
 
           for (const target of targets) {
             if (target.edgePct < latencySniperConfig.minProfitThreshold) continue;
-            logger.info(
-              `[LatencySniper] Target: conditionId=${target.conditionId} side=${target.side} edge=${(target.edgePct * 100).toFixed(2)}%`,
-            );
+            log.info('Target identified', {
+              conditionId: target.conditionId,
+              side: target.side,
+              edgePct: target.edgePct,
+            });
 
             if (latencySniperConfig.tradingMode === 'paper') {
-              logger.info('[LatencySniper] PAPER: would place order here.');
+              log.info('PAPER: would place order here');
             }
             // live order execution wired in via the shared order client
           }
         }
       }
     } catch (err) {
-      logger.error(`[LatencySniper] Error in poll loop: ${err}`);
+      log.error('Error in poll loop', { error: String(err) });
     }
 
     await new Promise((r) => setTimeout(r, latencySniperConfig.pollIntervalMs));

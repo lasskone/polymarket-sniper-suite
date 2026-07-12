@@ -8,15 +8,17 @@
  */
 
 import { resolutionArbConfig } from './config.js';
-import { logger } from '../shared/logger.js';
+import { createLogger } from '../shared/logger.js';
+
+const log = createLogger('resolution-arb');
 
 export async function runResolutionArb(): Promise<void> {
   if (!resolutionArbConfig.enabled) {
-    logger.info('[ResolutionArb] Module disabled — set ENABLE_RESOLUTION_ARB=true to activate.');
+    log.info('Module disabled — set ENABLE_RESOLUTION_ARB=true to activate.');
     return;
   }
 
-  logger.info('[ResolutionArb] Starting resolution arbitrage scanner...');
+  log.info('Starting resolution arbitrage scanner');
 
   // TODO: Subscribe to a resolution oracle feed or scrape known outcomes.
   // For each confirmed outcome:
@@ -25,5 +27,5 @@ export async function runResolutionArb(): Promise<void> {
   //      maxPositionSizeUsdc via the CLOB client.
   //   3. Log entry, hold until resolution, record P&L to Supabase.
 
-  logger.info('[ResolutionArb] Stub — awaiting oracle integration.');
+  log.info('Stub — awaiting oracle integration');
 }

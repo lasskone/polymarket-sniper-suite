@@ -33,7 +33,8 @@
     "example:live-arb": "tsx examples/11-live-arbitrage-scan.ts",
     "example:trending-arb": "tsx examples/12-trending-arb-monitor.ts",
     "example:arb-service": "tsx examples/13-arbitrage-service.ts",
-    "test:supabase": "tsx scripts/test-supabase.ts"
+    "test:supabase": "tsx scripts/test-supabase.ts",
+    "test:risk": "tsx scripts/test-risk-manager.ts"
   },
   "keywords": [
     "polymarket",
