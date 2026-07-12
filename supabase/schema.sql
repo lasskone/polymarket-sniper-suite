@@ -199,19 +199,24 @@ ALTER TABLE market_snapshots  ENABLE ROW LEVEL SECURITY;
 
 -- Allow all operations for authenticated users
 -- (bot connects via service role, which bypasses RLS entirely)
-CREATE POLICY IF NOT EXISTS "authenticated_full_access_trades"
+DROP POLICY IF EXISTS "authenticated_full_access_trades" ON trades;
+CREATE POLICY "authenticated_full_access_trades"
   ON trades FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
-CREATE POLICY IF NOT EXISTS "authenticated_full_access_opportunities"
+DROP POLICY IF EXISTS "authenticated_full_access_opportunities" ON opportunities;
+CREATE POLICY "authenticated_full_access_opportunities"
   ON opportunities FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
-CREATE POLICY IF NOT EXISTS "authenticated_full_access_performance"
+DROP POLICY IF EXISTS "authenticated_full_access_performance" ON performance;
+CREATE POLICY "authenticated_full_access_performance"
   ON performance FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
-CREATE POLICY IF NOT EXISTS "authenticated_full_access_risk_management"
+DROP POLICY IF EXISTS "authenticated_full_access_risk_management" ON risk_management;
+CREATE POLICY "authenticated_full_access_risk_management"
   ON risk_management FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
-CREATE POLICY IF NOT EXISTS "authenticated_full_access_market_snapshots"
+DROP POLICY IF EXISTS "authenticated_full_access_market_snapshots" ON market_snapshots;
+CREATE POLICY "authenticated_full_access_market_snapshots"
   ON market_snapshots FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- ---------------------------------------------------------------------------
