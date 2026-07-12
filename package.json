@@ -35,7 +35,8 @@
     "example:arb-service": "tsx examples/13-arbitrage-service.ts",
     "test:supabase": "tsx scripts/test-supabase.ts",
     "test:risk": "tsx scripts/test-risk-manager.ts",
-    "test:api-football": "tsx scripts/test-api-football.ts"
+    "test:api-football": "tsx scripts/test-api-football.ts",
+    "test:market-matcher": "tsx scripts/test-market-matcher.ts"
   },
   "keywords": [
     "polymarket",
