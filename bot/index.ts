@@ -41,6 +41,7 @@ import {
 import type { BotState, BotConfig } from '../src/dashboard/index.js';
 import { PolymarketSDK }             from '../src/index.js';
 import type { DipArbUnderlying }     from '../src/services/dip-arb-types.js';
+import { NegRiskArbService }         from '../src/services/negrisk-arb-service.js';
 
 // ---------------------------------------------------------------------------
 // Step 1: Error handlers — registered before anything else so no exception
@@ -329,6 +330,77 @@ async function main(): Promise<void> {
           });
         } finally {
           await sdk.dipArb.stop();
+        }
+      },
+    },
+    {
+      name:    'negrisk-arb',
+      enabled: process.env.ENABLE_NEGRISK_ARB === 'true',
+      run:     async (): Promise<void> => {
+        // Reuse the SDK's already-initialised Gamma API client.
+        // NegRiskArbService is detection-only — no order execution yet.
+        // autoExecute is intentionally omitted from this module until CTF
+        // adapter integration is complete.
+        const sdk = await PolymarketSDK.create({
+          privateKey: process.env.POLYMARKET_PRIVATE_KEY,
+        });
+
+        const negRisk = new NegRiskArbService(sdk.gammaApi);
+        negRisk.updateConfig({
+          shares:          10,
+          minNetProfitUSD: 0.05,
+          scanIntervalMs:  30_000,
+          minOutcomes:     3,
+          maxOutcomes:     25,
+        });
+
+        negRisk.on('started', () => {
+          dashboardEmitter.log('INFO', 'NegRiskArb scanner started');
+        });
+
+        negRisk.on('scanned', (result: { eventsTotal: number; negRiskEvents: number }) => {
+          dashboardEmitter.log(
+            'INFO',
+            `NegRiskArb scanned ${result.eventsTotal} events, ` +
+            `${result.negRiskEvents} multi-outcome candidates`,
+          );
+        });
+
+        negRisk.on('signal', (signal: {
+          eventTitle: string;
+          direction: string;
+          yesSum: number;
+          netProfitUSD: number;
+          outcomeCount: number;
+          deviation: number;
+        }) => {
+          dashboardEmitter.log(
+            'SIGNAL',
+            `NegRiskArb ${signal.direction.toUpperCase()} — "${signal.eventTitle}" ` +
+            `[${signal.outcomeCount} outcomes, Σ YES=${signal.yesSum.toFixed(4)}, ` +
+            `dev=${signal.deviation.toFixed(4)}, net $${signal.netProfitUSD.toFixed(4)}] ` +
+            `(paper mode — detection only)`,
+          );
+        });
+
+        negRisk.on('stopped', () => {
+          dashboardEmitter.log('INFO', 'NegRiskArb scanner stopped');
+        });
+
+        negRisk.on('error', (err: Error) => {
+          dashboardEmitter.log('ERROR', `NegRiskArb error: ${err.message}`);
+        });
+
+        await negRisk.start();
+
+        // Hold alive: NegRiskArbService drives itself via polling timer.
+        // Reject on the first unrecoverable error so runWithRestart resets.
+        try {
+          await new Promise<never>((_, reject) => {
+            negRisk.once('error', (err: Error) => reject(err));
+          });
+        } finally {
+          negRisk.stop();
         }
       },
     },
