@@ -460,6 +460,11 @@ async function main(): Promise<void> {
 
         negRisk.on('started', () => {
           dashboardEmitter.log('INFO', 'NegRiskArb scanner started');
+          const cur = dashboardEmitter.getState();
+          if (cur) dashboardEmitter.updateState({
+            ...cur,
+            negRiskArb: { ...cur.negRiskArb, status: 'scanning' },
+          });
         });
 
         negRisk.on('scanned', (result: { eventsTotal: number; negRiskEvents: number }) => {
@@ -468,6 +473,16 @@ async function main(): Promise<void> {
             `NegRiskArb scanned ${result.eventsTotal} events, ` +
             `${result.negRiskEvents} multi-outcome candidates`,
           );
+          const cur = dashboardEmitter.getState();
+          if (cur) dashboardEmitter.updateState({
+            ...cur,
+            negRiskArb: {
+              ...cur.negRiskArb,
+              status:          'scanning',
+              eventsScanned:   result.eventsTotal,
+              candidatesFound: result.negRiskEvents,
+            },
+          });
         });
 
         negRisk.on('signal', (signal: {
@@ -485,10 +500,28 @@ async function main(): Promise<void> {
             `dev=${signal.deviation.toFixed(4)}, net $${signal.netProfitUSD.toFixed(4)}] ` +
             `(paper mode — detection only)`,
           );
+          const cur = dashboardEmitter.getState();
+          if (cur) {
+            const newSignal = { ...signal, timestamp: new Date().toISOString() };
+            const prev = cur.negRiskArb.recentSignals ?? [];
+            dashboardEmitter.updateState({
+              ...cur,
+              negRiskArb: {
+                ...cur.negRiskArb,
+                lastSignal:    newSignal,
+                recentSignals: [newSignal, ...prev].slice(0, 10),
+              },
+            });
+          }
         });
 
         negRisk.on('stopped', () => {
           dashboardEmitter.log('INFO', 'NegRiskArb scanner stopped');
+          const cur = dashboardEmitter.getState();
+          if (cur) dashboardEmitter.updateState({
+            ...cur,
+            negRiskArb: { ...cur.negRiskArb, status: 'idle' },
+          });
         });
 
         negRisk.on('error', (err: Error) => {
@@ -528,6 +561,11 @@ async function main(): Promise<void> {
 
         logicArb.on('started', () => {
           dashboardEmitter.log('INFO', 'LogicArb scanner started');
+          const cur = dashboardEmitter.getState();
+          if (cur) dashboardEmitter.updateState({
+            ...cur,
+            logicArb: { ...cur.logicArb, status: 'scanning' },
+          });
         });
 
         logicArb.on('scanned', (result: { pairsTotal: number; pairsScanned: number }) => {
@@ -535,6 +573,16 @@ async function main(): Promise<void> {
             'INFO',
             `LogicArb scanned ${result.pairsScanned}/${result.pairsTotal} pairs`,
           );
+          const cur = dashboardEmitter.getState();
+          if (cur) dashboardEmitter.updateState({
+            ...cur,
+            logicArb: {
+              ...cur.logicArb,
+              status:       'scanning',
+              pairsTracked: result.pairsTotal,
+              pairsScanned: result.pairsScanned,
+            },
+          });
         });
 
         logicArb.on('signal', (signal: LogicArbSignal) => {
@@ -550,6 +598,28 @@ async function main(): Promise<void> {
             `${signal.trade.legB.token}-B @ ${signal.trade.legB.price.toFixed(4)} ` +
             `(detection only)`,
           );
+          const cur = dashboardEmitter.getState();
+          if (cur) {
+            const newSignal = {
+              relationship:  signal.relationship,
+              marketASlug:   signal.marketASlug,
+              marketBSlug:   signal.marketBSlug,
+              priceA:        signal.priceA,
+              priceB:        signal.priceB,
+              deviation:     signal.deviation,
+              netProfitUSD:  signal.netProfitUSD,
+              timestamp:     new Date().toISOString(),
+            };
+            const prev = cur.logicArb.recentSignals ?? [];
+            dashboardEmitter.updateState({
+              ...cur,
+              logicArb: {
+                ...cur.logicArb,
+                lastSignal:    newSignal,
+                recentSignals: [newSignal, ...prev].slice(0, 10),
+              },
+            });
+          }
         });
 
         logicArb.on('feeRateFallback', (w: { conditionId: string; reason: string }) => {
@@ -558,6 +628,11 @@ async function main(): Promise<void> {
 
         logicArb.on('stopped', () => {
           dashboardEmitter.log('INFO', 'LogicArb scanner stopped');
+          const cur = dashboardEmitter.getState();
+          if (cur) dashboardEmitter.updateState({
+            ...cur,
+            logicArb: { ...cur.logicArb, status: 'idle' },
+          });
         });
 
         logicArb.on('error', (err: Error) => {
@@ -610,6 +685,11 @@ async function main(): Promise<void> {
 
         sbArb.on('started', () => {
           dashboardEmitter.log('INFO', 'SportsbookArb scanner started (detection-only — directional bets)');
+          const cur = dashboardEmitter.getState();
+          if (cur) dashboardEmitter.updateState({
+            ...cur,
+            sportsbookArb: { ...cur.sportsbookArb, status: 'scanning' },
+          });
         });
 
         sbArb.on('scanned', (result: { fixturesTotal: number; fixturesWithPolymarket: number }) => {
@@ -618,6 +698,21 @@ async function main(): Promise<void> {
             `SportsbookArb scanned ${result.fixturesTotal} fixtures, ` +
             `${result.fixturesWithPolymarket} had Polymarket coverage`,
           );
+          const cur = dashboardEmitter.getState();
+          if (cur) {
+            const ratio = result.fixturesTotal > 0
+              ? result.fixturesWithPolymarket / result.fixturesTotal
+              : 0;
+            dashboardEmitter.updateState({
+              ...cur,
+              sportsbookArb: {
+                ...cur.sportsbookArb,
+                status:                  'scanning',
+                fixturesScanned:         result.fixturesTotal,
+                polymarketCoverageRatio: ratio,
+              },
+            });
+          }
         });
 
         sbArb.on('signal', (signal: SportsbookArbSignal) => {
@@ -635,10 +730,38 @@ async function main(): Promise<void> {
               `(detection only — directional bet, NOT risk-free)`,
             );
           }
+          const cur = dashboardEmitter.getState();
+          if (cur && signal.legs.length > 0) {
+            const bestLeg = signal.legs[0];
+            const newSignal = {
+              participant1Name:     signal.participant1Name,
+              participant2Name:     signal.participant2Name,
+              tournamentName:       signal.tournamentName,
+              outcomeName:          bestLeg.outcomeName,
+              edge:                 bestLeg.edge,
+              expectedNetProfitUSD: bestLeg.expectedNetProfitUSD,
+              confidence:           signal.confidence,
+              timestamp:            new Date().toISOString(),
+            };
+            const prev = cur.sportsbookArb.recentSignals ?? [];
+            dashboardEmitter.updateState({
+              ...cur,
+              sportsbookArb: {
+                ...cur.sportsbookArb,
+                lastSignal:    newSignal,
+                recentSignals: [newSignal, ...prev].slice(0, 10),
+              },
+            });
+          }
         });
 
         sbArb.on('stopped', () => {
           dashboardEmitter.log('INFO', 'SportsbookArb scanner stopped');
+          const cur = dashboardEmitter.getState();
+          if (cur) dashboardEmitter.updateState({
+            ...cur,
+            sportsbookArb: { ...cur.sportsbookArb, status: 'idle' },
+          });
         });
 
         sbArb.on('error', (err: Error) => {
@@ -737,6 +860,27 @@ async function main(): Promise<void> {
       lastOpportunity:    null,
     },
     smartMoneySignals: [],
+    negRiskArb: {
+      status:          'idle',
+      eventsScanned:   0,
+      candidatesFound: 0,
+      lastSignal:      null,
+      recentSignals:   [],
+    },
+    logicArb: {
+      status:       'idle',
+      pairsTracked: 0,
+      pairsScanned: 0,
+      lastSignal:   null,
+      recentSignals: [],
+    },
+    sportsbookArb: {
+      status:                  'idle',
+      fixturesScanned:         0,
+      polymarketCoverageRatio: 0,
+      lastSignal:              null,
+      recentSignals:           [],
+    },
   };
 
   const initialBotConfig: BotConfig = {
@@ -756,6 +900,9 @@ async function main(): Promise<void> {
     smartMoney:    { enabled: false, topN: 0, minWinRate: 0, minPnl: 0, minTrades: 0, customWallets: [] },
     arbitrage:     { enabled: false, profitThreshold: 0, autoExecute: false },
     dipArb:        { enabled: process.env.ENABLE_DIP_ARB === 'true', coins: ['BTC', 'ETH', 'SOL'] },
+    negRiskArb:    { enabled: process.env.ENABLE_NEGRISK_ARB === 'true' },
+    logicArb:      { enabled: process.env.ENABLE_LOGIC_ARB === 'true' },
+    sportsbookArb: { enabled: process.env.ENABLE_SPORTSBOOK_ARB === 'true' },
     directTrading: { enabled: false },
     binance:       { enabled: false },
     dryRun:        cfg.tradingMode !== 'live',

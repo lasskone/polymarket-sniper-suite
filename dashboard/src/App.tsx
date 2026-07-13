@@ -18,6 +18,9 @@ import {
   HistoryPage,
   PositionsPage,
   StrategyControls,
+  NegRiskArbPanel,
+  LogicArbPanel,
+  SportsbookArbPanel,
 } from './components';
 
 type Page = 'dashboard' | 'history' | 'positions';
@@ -163,6 +166,13 @@ function App() {
           <ArbitragePanel state={state} />
           <PnLPanel state={state} config={config} />
           <SessionSummary state={state} />
+        </div>
+
+        {/* Row 2b: Detection-only strategy panels */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <NegRiskArbPanel state={state} />
+          <LogicArbPanel state={state} />
+          <SportsbookArbPanel state={state} />
         </div>
 
         {/* Row 3: Smart Money (main) + Side Panel (Trends + Strategies + OnChain) */}

@@ -42,13 +42,37 @@ export function StrategyControls({ config, onToggle }: StrategyControlsProps) {
     // Only list strategies that have a real implementation wired in bot/index.ts.
     // Stub strategies (smartMoney, arbitrage, directTrading) are omitted so they
     // never appear as toggleable controls that send commands into the void.
-    const strategies = [
+    const liveStrategies = [
         {
             key: 'dipArb',
             label: 'DipArb (Crypto Short-Term)',
             icon: '📉',
             color: 'green',
             enabled: config.dipArb?.enabled ?? false,
+        },
+    ];
+
+    const detectionStrategies = [
+        {
+            key: 'negRiskArb',
+            label: 'NegRisk Arb',
+            icon: '⚖️',
+            color: 'orange',
+            enabled: config.negRiskArb?.enabled ?? false,
+        },
+        {
+            key: 'logicArb',
+            label: 'Logic Arb',
+            icon: '🔗',
+            color: 'purple',
+            enabled: config.logicArb?.enabled ?? false,
+        },
+        {
+            key: 'sportsbookArb',
+            label: 'Sportsbook Arb',
+            icon: '🏆',
+            color: 'cyan',
+            enabled: config.sportsbookArb?.enabled ?? false,
         },
     ];
 
@@ -61,7 +85,7 @@ export function StrategyControls({ config, onToggle }: StrategyControlsProps) {
                 </h3>
             </div>
             <div className="panel-body space-y-2">
-                {strategies.map((s) => (
+                {liveStrategies.map((s) => (
                     <Toggle
                         key={s.key}
                         label={s.label}
@@ -71,8 +95,22 @@ export function StrategyControls({ config, onToggle }: StrategyControlsProps) {
                         onChange={(enabled) => onToggle(s.key, enabled)}
                     />
                 ))}
-                <div className="text-xs text-gray-500 mt-2 text-center">
-                    Changes take effect immediately. You may need sufficient USDC.e for trading strategies.
+                <div className="text-xs text-gray-500 pt-1 pb-0.5 uppercase tracking-wider">
+                    Detection-only (read-only)
+                </div>
+                {detectionStrategies.map((s) => (
+                    <Toggle
+                        key={s.key}
+                        label={s.label}
+                        icon={s.icon}
+                        color={s.color}
+                        enabled={s.enabled}
+                        onChange={(enabled) => onToggle(s.key, enabled)}
+                    />
+                ))}
+                <div className="text-xs text-gray-500 mt-2 text-center leading-relaxed">
+                    DipArb: changes take effect immediately.<br />
+                    <span className="text-gray-600">Detection modules: env flag — restart required to toggle.</span>
                 </div>
             </div>
         </div>

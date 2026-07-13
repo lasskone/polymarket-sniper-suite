@@ -77,6 +77,33 @@ export interface BotState {
   // Smart Money signals
   smartMoneySignals: SmartMoneySignal[];
 
+  // NegRisk arbitrage detection
+  negRiskArb: {
+    status: 'scanning' | 'idle';
+    eventsScanned: number;
+    candidatesFound: number;
+    lastSignal: NegRiskArbSignal | null;
+    recentSignals: NegRiskArbSignal[];
+  };
+
+  // Logic / correlated-markets arbitrage detection
+  logicArb: {
+    status: 'scanning' | 'idle';
+    pairsTracked: number;
+    pairsScanned: number;
+    lastSignal: LogicArbDashboardSignal | null;
+    recentSignals: LogicArbDashboardSignal[];
+  };
+
+  // Sportsbook arbitrage detection
+  sportsbookArb: {
+    status: 'scanning' | 'idle';
+    fixturesScanned: number;
+    polymarketCoverageRatio: number;
+    lastSignal: SportsbookArbDashboardSignal | null;
+    recentSignals: SportsbookArbDashboardSignal[];
+  };
+
   // Paper Trading (Dry Run)
   paper?: {
     balance: number;
@@ -111,6 +138,38 @@ export interface SmartMoneySignal {
   side: 'BUY' | 'SELL';
   size: number;
   price: number;
+}
+
+export interface NegRiskArbSignal {
+  eventTitle: string;
+  direction: string;
+  yesSum: number;
+  netProfitUSD: number;
+  outcomeCount: number;
+  deviation: number;
+  timestamp: string;
+}
+
+export interface LogicArbDashboardSignal {
+  relationship: string;
+  marketASlug: string;
+  marketBSlug: string;
+  priceA: number;
+  priceB: number;
+  deviation: number;
+  netProfitUSD: number;
+  timestamp: string;
+}
+
+export interface SportsbookArbDashboardSignal {
+  participant1Name: string;
+  participant2Name: string;
+  tournamentName: string;
+  outcomeName: string;
+  edge: number;
+  expectedNetProfitUSD: number;
+  confidence: number;
+  timestamp: string;
 }
 
 export interface BotConfig {
@@ -148,6 +207,15 @@ export interface BotConfig {
   dipArb: {
     enabled: boolean;
     coins: readonly string[];
+  };
+  negRiskArb: {
+    enabled: boolean;
+  };
+  logicArb: {
+    enabled: boolean;
+  };
+  sportsbookArb: {
+    enabled: boolean;
   };
   directTrading: {
     enabled: boolean;
