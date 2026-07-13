@@ -66,6 +66,8 @@ import {
   createDipArbInitialStats,
   createDipArbRoundState,
   calculateDipArbProfitRate,
+  netProfitAfterFees,
+  resolveEffectiveSumTarget,
   estimateUpWinRate,
   detectMispricing,
   parseUnderlyingFromSlug,
@@ -1403,12 +1405,23 @@ export class DipArbService extends EventEmitter {
     const targetPrice = currentPrice * (1 + this.config.maxSlippage);
     const totalCost = leg1.price + targetPrice;
 
-    // Check if profitable - 只用 sumTarget 控制
-    if (totalCost > this.config.sumTarget) {
+    // Gate 1: per-coin sumTarget — fast path before the fee calculation
+    const effectiveSumTarget = resolveEffectiveSumTarget(this.config, this.market.underlying);
+    if (totalCost > effectiveSumTarget) {
       // 每 5 秒输出一次等待日志，避免刷屏
       if (this.config.debug && Date.now() % 5000 < 100) {
         const profitRate = calculateDipArbProfitRate(totalCost);
-        this.log(`⏳ Waiting Leg2: ${hedgeSide} @ ${currentPrice.toFixed(4)}, cost ${totalCost.toFixed(4)} > ${this.config.sumTarget}, profit ${(profitRate * 100).toFixed(1)}%`);
+        this.log(`⏳ Waiting Leg2: ${hedgeSide} @ ${currentPrice.toFixed(4)}, cost ${totalCost.toFixed(4)} > ${effectiveSumTarget} [${this.market.underlying}], profit ${(profitRate * 100).toFixed(1)}%`);
+      }
+      return null;
+    }
+
+    // Gate 2: net profit after Polymarket 7% crypto taker fees on both legs.
+    // fee = shares × 0.07 × p × (1−p) per leg — peaks near 50-50 price.
+    const netProfit = netProfitAfterFees(leg1.price, targetPrice, leg1.shares);
+    if (netProfit < this.config.minNetProfitUSD) {
+      if (this.config.debug) {
+        this.log(`⏳ Leg2 rejected: net $${netProfit.toFixed(4)} < min $${this.config.minNetProfitUSD} (fees reduce margin)`);
       }
       return null;
     }
@@ -1416,7 +1429,7 @@ export class DipArbService extends EventEmitter {
     const expectedProfitRate = calculateDipArbProfitRate(totalCost);
 
     if (this.config.debug) {
-      this.log(`✅ Leg2 signal found! ${hedgeSide} @ ${currentPrice.toFixed(4)}, totalCost ${totalCost.toFixed(4)}, profit ${(expectedProfitRate * 100).toFixed(2)}%`);
+      this.log(`✅ Leg2 signal! ${hedgeSide} @ ${currentPrice.toFixed(4)}, totalCost ${totalCost.toFixed(4)}, gross ${(expectedProfitRate * 100).toFixed(2)}%, net $${netProfit.toFixed(4)}`);
     }
 
     // ✅ FIX: Use leg1.shares instead of config.shares to ensure balanced hedge

@@ -17,6 +17,69 @@
  *    - 利润：总成本 < $1 时获得无风险利润
  */
 
+// ============= Fee Constants =============
+
+/**
+ * Polymarket taker fee rate for **crypto** markets (BTC, ETH, SOL, XRP).
+ *
+ * Formula (source: https://docs.polymarket.com/trading/fees.md):
+ *   fee = shares × CRYPTO_FEE_RATE × p × (1 − p)
+ *
+ * Examples (100 shares):
+ *   p = 0.10 → $0.63   p = 0.30 → $1.47   p = 0.50 → $1.75
+ *
+ * The fee peaks at p = 0.50 (50-50 market) and drops toward 0 at the extremes.
+ */
+export const CRYPTO_FEE_RATE = 0.07;
+
+/**
+ * Calculate the guaranteed net profit (in USDC) for a completed DipArb round,
+ * after deducting Polymarket taker fees on both legs.
+ *
+ * This is a **pure function** — unit-testable with no dependencies.
+ *
+ * @param leg1Price  - Actual fill price of Leg 1 (0–1)
+ * @param leg2Price  - Expected fill price of Leg 2 (0–1, with slippage included)
+ * @param shares     - Number of shares traded per leg
+ * @param feeRate    - Polymarket taker fee coefficient (default: CRYPTO_FEE_RATE = 0.07)
+ * @returns Net profit in USDC (positive = profitable after fees)
+ *
+ * @example
+ * // 10 shares, leg1 @ 0.10, leg2 @ 0.82
+ * netProfitAfterFees(0.10, 0.82, 10)
+ * //  gross = (1 - 0.92) × 10 = $0.80
+ * //  fee1  = 10 × 0.07 × 0.10 × 0.90 = $0.063
+ * //  fee2  = 10 × 0.07 × 0.82 × 0.18 = $0.103
+ * //  net   = $0.80 − $0.063 − $0.103 = $0.634
+ */
+export function netProfitAfterFees(
+  leg1Price: number,
+  leg2Price: number,
+  shares: number,
+  feeRate: number = CRYPTO_FEE_RATE,
+): number {
+  const grossProfit = (1 - leg1Price - leg2Price) * shares;
+  const fee1 = shares * feeRate * leg1Price * (1 - leg1Price);
+  const fee2 = shares * feeRate * leg2Price * (1 - leg2Price);
+  return grossProfit - fee1 - fee2;
+}
+
+/**
+ * Resolve the effective sumTarget for a given underlying asset.
+ *
+ * Per-coin values in `sumTargetPerCoin` take precedence over the global
+ * `sumTarget` fallback. This is a **pure function** — unit-testable.
+ *
+ * @param config - Object with `sumTarget` (number) and `sumTargetPerCoin` (partial map)
+ * @param underlying - The asset whose threshold to resolve
+ */
+export function resolveEffectiveSumTarget(
+  config: { sumTarget: number; sumTargetPerCoin: Partial<Record<DipArbUnderlying, number>> },
+  underlying: DipArbUnderlying,
+): number {
+  return config.sumTargetPerCoin[underlying] ?? config.sumTarget;
+}
+
 // ============= Configuration =============
 
 /**
@@ -30,11 +93,24 @@ export interface DipArbServiceConfig {
   shares?: number;
 
   /**
-   * 对冲价格阈值 (sumTarget)
-   * 只有当 leg1Price + leg2Price <= sumTarget 时才执行对冲
+   * Global hedge price threshold (sumTarget) — fallback when no per-coin
+   * override is configured in `sumTargetPerCoin`.
+   * Only execute Leg 2 when leg1Price + leg2Price ≤ sumTarget.
    * @default 0.95
    */
   sumTarget?: number;
+
+  /**
+   * Per-coin sumTarget overrides.
+   * Keys present here take precedence over the global `sumTarget`.
+   *
+   * Rational defaults (accounting for Polymarket's 7% crypto taker fee):
+   *   BTC / ETH: 0.97  (~3% gross edge, ≥$0.05 net on 10 shares when p1≤0.25)
+   *   SOL:       0.96  (wider threshold for higher volatility)
+   *
+   * @default {}  (empty — uses global sumTarget for all coins)
+   */
+  sumTargetPerCoin?: Partial<Record<DipArbUnderlying, number>>;
 
   /**
    * 暴跌触发阈值
@@ -135,6 +211,19 @@ export interface DipArbServiceConfig {
   orderIntervalMs?: number;
 
   /**
+   * Minimum net profit in USDC after Polymarket taker fees before Leg 2 fires.
+   * Leg 2 is skipped if `netProfitAfterFees(leg1, leg2, shares) < minNetProfitUSD`.
+   *
+   * Default: $0.05 (≈ 0.5% of a $10 notional, 10-share trade at sumTarget 0.97).
+   *
+   * Rule of thumb: set to at least 0.5% of expected notional to ensure the
+   * trade covers gas + a small profit buffer.
+   *
+   * @default 0.05
+   */
+  minNetProfitUSD?: number;
+
+  /**
    * 启用调试日志
    * @default false
    */
@@ -164,7 +253,9 @@ export type DipArbConfigInternal = Required<Omit<DipArbServiceConfig, 'logHandle
  */
 export const DEFAULT_DIP_ARB_CONFIG: DipArbConfigInternal = {
   shares: 20,
-  sumTarget: 0.92,        // ✅ 放宽到 0.92 提高 Leg2 成交率 (8%+ 利润)
+  sumTarget: 0.92,          // global fallback (8%+ gross edge)
+  sumTargetPerCoin: {},     // empty → uses global sumTarget for all coins
+  minNetProfitUSD: 0.05,    // min $0.05 net after Polymarket 7% crypto taker fees
   dipThreshold: 0.15,
   windowMinutes: 2,
   slidingWindowMs: 3000,  // 3秒滑动窗口 - 核心参数！

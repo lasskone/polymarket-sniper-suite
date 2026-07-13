@@ -119,10 +119,15 @@ const CONFIG = {
     enabled: true,
     coins: ['BTC', 'ETH', 'SOL'] as const,
     shares: 10,
-    sumTarget: 0.92,
+    sumTarget: 0.97,          // global fallback (~3% gross edge before fees)
+    sumTargetPerCoin: {       // per-coin overrides; see netProfitAfterFees for fee math
+      BTC: 0.97,              // ~$0.11 net after fees at p1=0.15, p2=0.82, 10 shares
+      ETH: 0.97,
+      SOL: 0.96,              // wider threshold: SOL is more volatile, Leg1 often higher-priced
+    },
+    minNetProfitUSD: 0.05,    // min $0.05 net after Polymarket 7% crypto taker fees
     autoRotate: true,
-    // 🔴 NEW: Minimum trade value enforcement
-    minTradeValueUSD: 1.5,  // $1.50 minimum (buffer above $1)
+    minTradeValueUSD: 1.5,    // $1.50 minimum (buffer above $1)
   },
 
   onchain: {
@@ -547,10 +552,12 @@ async function setupDipArb(sdk: PolymarketSDK) {
   log('INFO', 'Setting up DipArb...');
 
   sdk.dipArb.updateConfig({
-    shares: CONFIG.dipArb.shares,
-    sumTarget: CONFIG.dipArb.sumTarget,
-    autoExecute: !CONFIG.dryRun,
-    debug: true,
+    shares:           CONFIG.dipArb.shares,
+    sumTarget:        CONFIG.dipArb.sumTarget,
+    sumTargetPerCoin: CONFIG.dipArb.sumTargetPerCoin,
+    minNetProfitUSD:  CONFIG.dipArb.minNetProfitUSD,
+    autoExecute:      !CONFIG.dryRun,
+    debug:            true,
   });
 
   sdk.dipArb.on('signal', (s) => log('SIGNAL', `DipArb: ${s.type} ${s.side}`));
