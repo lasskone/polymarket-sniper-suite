@@ -6,25 +6,10 @@ interface StrategyGridProps {
 }
 
 export function StrategyGrid({ state, config }: StrategyGridProps) {
+  // Only list strategies that have a real implementation wired in bot/index.ts.
+  // Stub strategies (smartMoney, arbitrage, directTrading) are omitted so they
+  // never appear in the UI, even as disabled/OFF cards.
   const strategies = [
-    {
-      name: 'Smart Money',
-      icon: '👛',
-      enabled: config?.smartMoney?.enabled ?? false,
-      trades: state?.smartMoneyTrades ?? 0,
-      detail: `${state?.followedWallets?.length ?? 0} wallets`,
-      color: 'from-pink-500/20 to-purple-500/20',
-      badgeColor: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
-    },
-    {
-      name: 'Arbitrage',
-      icon: '🔄',
-      enabled: config?.arbitrage?.enabled ?? false,
-      trades: state?.arbTrades ?? 0,
-      detail: 'Price gaps',
-      color: 'from-blue-500/20 to-cyan-500/20',
-      badgeColor: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-    },
     {
       name: 'DipArb',
       icon: '📉',
@@ -33,15 +18,6 @@ export function StrategyGrid({ state, config }: StrategyGridProps) {
       detail: 'Sum target',
       color: 'from-green-500/20 to-emerald-500/20',
       badgeColor: 'bg-green-500/20 text-green-400 border-green-500/30',
-    },
-    {
-      name: 'Direct',
-      icon: '⚡',
-      enabled: config?.directTrading?.enabled ?? false,
-      trades: state?.directTrades ?? 0,
-      detail: 'Trend-based',
-      color: 'from-yellow-500/20 to-orange-500/20',
-      badgeColor: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
     },
   ];
 
@@ -54,9 +30,9 @@ export function StrategyGrid({ state, config }: StrategyGridProps) {
           <span className="text-base">🎯</span>
           <span className="text-sm font-medium text-white">Strategies</span>
         </div>
-        <span className="text-[10px] text-gray-500">{activeCount}/4 active</span>
+        <span className="text-[10px] text-gray-500">{activeCount}/1 active</span>
       </div>
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+      <div className="grid grid-cols-1 gap-2">
         {strategies.map((s) => (
           <div
             key={s.name}

@@ -176,9 +176,9 @@ export function startDashboard(port = 3001): http.Server {
     broadcast({ type: 'config', payload: config });
   });
 
-  server.listen(port, () => {
-    console.log(`[Dashboard] Server running at http://localhost:${port}`);
-    console.log(`[Dashboard] WebSocket at ws://localhost:${port}`);
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`[Dashboard] Server running at http://0.0.0.0:${port}`);
+    console.log(`[Dashboard] WebSocket at ws://0.0.0.0:${port}`);
   });
 
   return server;

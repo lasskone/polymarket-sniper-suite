@@ -9,7 +9,7 @@
  *
  * Startup sequence:
  *   1. Register uncaughtException / unhandledRejection handlers
- *   2. Start health server immediately (sync, binds to 0.0.0.0)
+ *   2. Start dashboard server immediately (sync, binds to 0.0.0.0)
  *   3. Load + validate config (fatal on error)
  *   4. Verify Supabase connection (non-fatal warning if unavailable)
  *   5. Initialize shared services (RiskManager)
@@ -34,11 +34,13 @@ import { runLatencySniper }          from '../modules/latency-sniper/index.js';
 import { runResolutionArb }          from '../modules/resolution-arb/index.js';
 import { runCrossMarketArb }         from '../modules/cross-market-arb/index.js';
 import {
-  startHealthServer,
-  stopHealthServer,
-  updateBotStatus,
-  incrementErrors,
-} from './health-server.js';
+  startDashboard,
+  stopDashboard,
+  dashboardEmitter,
+} from '../src/dashboard/index.js';
+import type { BotState, BotConfig } from '../src/dashboard/index.js';
+import { PolymarketSDK }             from '../src/index.js';
+import type { DipArbUnderlying }     from '../src/services/dip-arb-types.js';
 
 // ---------------------------------------------------------------------------
 // Step 1: Error handlers — registered before anything else so no exception
@@ -47,13 +49,13 @@ import {
 
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
-  incrementErrors();
+  dashboardEmitter.log('ERROR', `Uncaught Exception: ${String(err)}`);
   // Don't exit — keep the bot running
 });
 
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled Rejection:', reason);
-  incrementErrors();
+  dashboardEmitter.log('ERROR', `Unhandled Rejection: ${String(reason)}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -63,9 +65,9 @@ process.on('unhandledRejection', (reason) => {
 // ---------------------------------------------------------------------------
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
-console.log(`Starting health server on port ${PORT}`);
-startHealthServer(PORT);
-// "Health server ready" is logged inside startHealthServer's listen callback.
+console.log(`Starting dashboard server on port ${PORT}`);
+startDashboard(PORT);
+// "Dashboard server ready" is logged inside startDashboard's listen callback.
 
 // ---------------------------------------------------------------------------
 // Logger — initialised after health server so it can't block step 2.
@@ -91,9 +93,9 @@ function requestShutdown(signal: string): void {
   }, SHUTDOWN_GRACE_MS);
   timer.unref();
 
-  stopHealthServer()
+  stopDashboard()
     .then(() => {
-      log.info('Health server stopped. Goodbye.');
+      log.info('Dashboard server stopped. Goodbye.');
       process.exit(0);
     })
     .catch(() => process.exit(1));
@@ -119,7 +121,7 @@ async function runWithRestart(
       log.info(`Module exited cleanly`, { module: name });
       return;
     } catch (err) {
-      incrementErrors();
+      dashboardEmitter.log('ERROR', `Module ${name} crashed: ${String(err)}`);
       log.error(`Module crashed — restarting in ${restartDelayMs / 1000}s`, {
         module: name,
         error:  String(err),
@@ -230,6 +232,106 @@ async function main(): Promise<void> {
       enabled: cfg.enableCrossMarketArb,
       run:     runCrossMarketArb,
     },
+    {
+      name:    'dip-arb',
+      enabled: process.env.ENABLE_DIP_ARB === 'true',
+      run:     async (): Promise<void> => {
+        const sdk = await PolymarketSDK.create({
+          privateKey: process.env.POLYMARKET_PRIVATE_KEY,
+        });
+
+        // Mirror CONFIG.dipArb from bot-with-dashboard.ts (sumTargetPerCoin + minNetProfitUSD included)
+        sdk.dipArb.updateConfig({
+          shares:           10,
+          sumTarget:        0.97,
+          sumTargetPerCoin: { BTC: 0.97, ETH: 0.97, SOL: 0.96 },
+          minNetProfitUSD:  0.05,
+          autoExecute:      cfg.tradingMode === 'live',
+          debug:            false,
+        });
+
+        // Wire DipArbService events → dashboardEmitter so DipArbPanel receives live data
+        sdk.dipArb.on('started', (market: any) => {
+          dashboardEmitter.updateStrategyStatus('dipArb', 'active', market.name);
+          dashboardEmitter.log('INFO', `DipArb started: ${market.name}`);
+        });
+
+        sdk.dipArb.on('orderbookUpdate', (update: { upPrice: number; downPrice: number; sum: number }) => {
+          const s = dashboardEmitter.getState();
+          if (s) {
+            s.dipArb.upPrice   = update.upPrice;
+            s.dipArb.downPrice = update.downPrice;
+            s.dipArb.sum       = update.sum;
+            dashboardEmitter.updateState(s);
+          }
+        });
+
+        sdk.dipArb.on('signal', (signal: any) => {
+          const side: string = signal.dipSide ?? signal.hedgeSide ?? 'UP';
+          dashboardEmitter.log(
+            'SIGNAL',
+            `DipArb ${signal.type}: ${side} @ ${signal.currentPrice?.toFixed(3) ?? '?'}`,
+          );
+        });
+
+        sdk.dipArb.on('execution', (result: any) => {
+          if (result.success) {
+            dashboardEmitter.log(
+              'TRADE',
+              `DipArb ${result.leg}: ${result.side ?? ''} @ ${result.price?.toFixed(3) ?? '?'}`,
+            );
+          } else {
+            dashboardEmitter.log('WARN', `DipArb execution failed (${result.leg}): ${result.error ?? 'unknown'}`);
+          }
+        });
+
+        sdk.dipArb.on('roundComplete', (result: any) => {
+          const profitStr = result.profit != null ? ` | net $${result.profit.toFixed(4)}` : '';
+          dashboardEmitter.log('INFO', `DipArb round ${result.roundId}: ${result.status}${profitStr}`);
+        });
+
+        sdk.dipArb.on('rotate', (event: any) => {
+          dashboardEmitter.log('INFO', `DipArb rotated to new market (reason: ${event.reason})`);
+          dashboardEmitter.updateStrategyStatus('dipArb', 'active');
+        });
+
+        sdk.dipArb.on('stopped', () => {
+          dashboardEmitter.updateStrategyStatus('dipArb', 'idle');
+        });
+
+        sdk.dipArb.on('error', (err: Error) => {
+          dashboardEmitter.log('ERROR', `DipArb error: ${err.message}`);
+        });
+
+        // Enable auto-rotate (matching bot-with-dashboard.ts)
+        sdk.dipArb.enableAutoRotate({
+          enabled:           true,
+          underlyings:       ['ETH', 'BTC', 'SOL'] as DipArbUnderlying[],
+          duration:          '15m',
+          settleStrategy:    'redeem',
+          redeemWaitMinutes: 5,
+        });
+
+        // Find and start monitoring a market
+        const market = await sdk.dipArb.findAndStart({ coin: 'ETH', preferDuration: '15m' });
+        if (market) {
+          dashboardEmitter.log('INFO', `DipArb monitoring: ${market.name}`);
+        } else {
+          dashboardEmitter.log('WARN', 'DipArb: no suitable markets found — idling until restart');
+          dashboardEmitter.updateStrategyStatus('dipArb', 'idle');
+        }
+
+        // Hold alive: DipArbService drives itself via WebSocket subscriptions.
+        // Reject on the first unrecoverable error so runWithRestart resets the connection.
+        try {
+          await new Promise<never>((_, reject) => {
+            sdk.dipArb.once('error', (err: Error) => reject(err));
+          });
+        } finally {
+          await sdk.dipArb.stop();
+        }
+      },
+    },
     // market-making: not yet implemented
     {
       name:    'market-making',
@@ -250,13 +352,92 @@ async function main(): Promise<void> {
     }
   }
 
-  // ── 7. Push state to health server ───────────────────────────────────────
-  updateBotStatus({
-    activeModules,
-    disabledModules,
-    tradingMode:  cfg.tradingMode,
-    startedAt:    Date.now(),
-  });
+  // ── 7. Push initial state + config to dashboard ──────────────────────────
+  const startedAt = Date.now();
+
+  const initialBotState: BotState = {
+    startTime:           startedAt,
+    dailyPnL:            0,
+    totalPnL:            0,
+    consecutiveLosses:   0,
+    consecutiveWins:     0,
+    tradesExecuted:      0,
+    isPaused:            false,
+    pauseUntil:          0,
+    monthlyPnL:          0,
+    monthStartTime:      startedAt,
+    peakCapital:         0,
+    currentCapital:      0,
+    currentDrawdown:     0,
+    permanentlyHalted:   false,
+    lastDailyReset:      startedAt,
+    smartMoneyTrades:    0,
+    arbTrades:           0,
+    dipArbTrades:        0,
+    directTrades:        0,
+    arbProfit:           0,
+    followedWallets:     [],
+    positions:           [],
+    activeArbMarket:     null,
+    activeDipArbMarket:  null,
+    splits:              0,
+    merges:              0,
+    redeems:             0,
+    swaps:               0,
+    usdcBalance:         0,
+    usdcEBalance:        0,
+    maticBalance:        0,
+    unrealizedPnL:       0,
+    btcTrend:            'neutral',
+    ethTrend:            'neutral',
+    solTrend:            'neutral',
+    dipArb: {
+      marketName: null,
+      underlying: null,
+      duration:   null,
+      endTime:    null,
+      upPrice:    0,
+      downPrice:  0,
+      sum:        0,
+      status:     'idle',
+      lastSignal: null,
+      signals:    [],
+    },
+    arbitrage: {
+      status:             'idle',
+      marketsScanned:     0,
+      opportunitiesFound: 0,
+      currentMarket:      null,
+      lastOpportunity:    null,
+    },
+    smartMoneySignals: [],
+  };
+
+  const initialBotConfig: BotConfig = {
+    capital: {
+      totalUsd:            0,
+      maxPerTradePct:      0,
+      maxPerMarketPct:     0,
+      maxTotalExposurePct: 0,
+      minOrderUsd:         0,
+      strategyAllocation:  { smartMoney: 0, arbitrage: 0, dipArb: 0, directTrades: 0 },
+    },
+    risk: {
+      dailyMaxLossPct:      0,
+      maxConsecutiveLosses: 0,
+      pauseOnBreachMinutes: 0,
+    },
+    smartMoney:    { enabled: false, topN: 0, minWinRate: 0, minPnl: 0, minTrades: 0, customWallets: [] },
+    arbitrage:     { enabled: false, profitThreshold: 0, autoExecute: false },
+    dipArb:        { enabled: process.env.ENABLE_DIP_ARB === 'true', coins: ['BTC', 'ETH', 'SOL'] },
+    directTrading: { enabled: false },
+    binance:       { enabled: false },
+    dryRun:        cfg.tradingMode !== 'live',
+  };
+
+  dashboardEmitter.updateState(initialBotState);
+  dashboardEmitter.updateConfig(initialBotConfig);
+  dashboardEmitter.log('INFO', 'Bot started', { activeModules, disabledModules, tradingMode: cfg.tradingMode });
 
   if (activeModules.length === 0) {
     log.warn('No modules enabled — bot is running but not trading', {
@@ -299,7 +480,7 @@ async function main(): Promise<void> {
     }
   }
 
-  log.info('All modules finished — process will stay alive via health server');
+  log.info('All modules finished — process will stay alive via dashboard server');
 }
 
 // ---------------------------------------------------------------------------

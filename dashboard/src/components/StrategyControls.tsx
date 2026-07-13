@@ -39,34 +39,16 @@ function Toggle({ label, enabled, icon, color, onChange }: ToggleProps) {
 export function StrategyControls({ config, onToggle }: StrategyControlsProps) {
     if (!config) return null;
 
+    // Only list strategies that have a real implementation wired in bot/index.ts.
+    // Stub strategies (smartMoney, arbitrage, directTrading) are omitted so they
+    // never appear as toggleable controls that send commands into the void.
     const strategies = [
-        {
-            key: 'smartMoney',
-            label: 'Smart Money (Copy Trading)',
-            icon: '👛',
-            color: 'purple',
-            enabled: config.smartMoney?.enabled ?? false,
-        },
-        {
-            key: 'arbitrage',
-            label: 'Arbitrage',
-            icon: '⚖️',
-            color: 'blue',
-            enabled: config.arbitrage?.enabled ?? false,
-        },
         {
             key: 'dipArb',
             label: 'DipArb (Crypto Short-Term)',
             icon: '📉',
             color: 'green',
             enabled: config.dipArb?.enabled ?? false,
-        },
-        {
-            key: 'directTrading',
-            label: 'Direct Trading (Trend Following)',
-            icon: '📈',
-            color: 'yellow',
-            enabled: config.directTrading?.enabled ?? false,
         },
     ];
 
