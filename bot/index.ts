@@ -40,8 +40,13 @@ import {
 } from '../src/dashboard/index.js';
 import type { BotState, BotConfig } from '../src/dashboard/index.js';
 import { PolymarketSDK }             from '../src/index.js';
-import type { DipArbUnderlying }     from '../src/services/dip-arb-types.js';
+import type { DipArbUnderlying, DipArbSignal } from '../src/services/dip-arb-types.js';
+import {
+  isDipArbLeg1Signal,
+  resolveEffectiveSumTarget,
+}                                    from '../src/services/dip-arb-types.js';
 import { NegRiskArbService }         from '../src/services/negrisk-arb-service.js';
+import { computeShares }             from '../src/services/dip-arb-sizing.js';
 
 // ---------------------------------------------------------------------------
 // Step 1: Error handlers — registered before anything else so no exception
@@ -241,20 +246,65 @@ async function main(): Promise<void> {
           privateKey: process.env.POLYMARKET_PRIVATE_KEY,
         });
 
-        // Mirror CONFIG.dipArb from bot-with-dashboard.ts (sumTargetPerCoin + minNetProfitUSD included)
-        sdk.dipArb.updateConfig({
-          shares:           10,
+        // Per-coin sumTarget config — mirrors sumTargetPerCoin used throughout the service.
+        // resolveEffectiveSumTarget() picks the coin-specific value (falling back to sumTarget).
+        const DIP_ARB_COIN_CONFIG = {
           sumTarget:        0.97,
-          sumTargetPerCoin: { BTC: 0.97, ETH: 0.97, SOL: 0.96 },
+          sumTargetPerCoin: { BTC: 0.97, ETH: 0.97, SOL: 0.96 } as Partial<Record<DipArbUnderlying, number>>,
+        };
+
+        // Tracks the underlying asset currently being monitored.
+        // Updated by the 'started' event (fires on initial start AND on every auto-rotate).
+        let currentCoin: DipArbUnderlying = 'ETH';
+
+        // Fetch current USDC balance and compute dynamic share count for the given coin.
+        async function resolveShares(coin: DipArbUnderlying): Promise<number> {
+          const effectiveSumTarget = resolveEffectiveSumTarget(DIP_ARB_COIN_CONFIG, coin);
+          try {
+            const { balance } = await sdk.tradingService.getBalanceAllowance('COLLATERAL');
+            const balanceUsdc = parseFloat(balance);
+            const shares = computeShares(
+              balanceUsdc,
+              cfg.positionSizePct,
+              cfg.maxPositionSizeUsdc,
+              effectiveSumTarget,
+            );
+            dashboardEmitter.log(
+              'INFO',
+              `DipArb sizing [${coin}]: balance=$${balanceUsdc.toFixed(2)} ` +
+              `→ ${cfg.positionSizePct}% / sumTarget=${effectiveSumTarget} → shares=${shares}`,
+            );
+            return shares;
+          } catch (err) {
+            dashboardEmitter.log('WARN', `DipArb sizing: balance fetch failed, using 1 share (${String(err)})`);
+            return 1;
+          }
+        }
+
+        const initialShares = await resolveShares('ETH');
+
+        // Mirror CONFIG.dipArb from bot-with-dashboard.ts (sumTargetPerCoin + minNetProfitUSD included).
+        //
+        // autoExecute is intentionally always false here. bot/index.ts takes over execution
+        // responsibility in the 'signal' handler (after a riskManager gate in live mode).
+        // This avoids a race condition where DipArbService would execute synchronously before
+        // an async risk check in the signal listener could complete.
+        sdk.dipArb.updateConfig({
+          shares:           initialShares,
+          sumTarget:        DIP_ARB_COIN_CONFIG.sumTarget,
+          sumTargetPerCoin: DIP_ARB_COIN_CONFIG.sumTargetPerCoin,
           minNetProfitUSD:  0.05,
-          autoExecute:      cfg.tradingMode === 'live',
+          autoExecute:      false,  // bot/index.ts manages execution via manual executeLeg1/2 calls
           debug:            false,
         });
 
-        // Wire DipArbService events → dashboardEmitter so DipArbPanel receives live data
+        // Wire DipArbService events → dashboardEmitter so DipArbPanel receives live data.
+        // 'started' fires both on initial start and on every auto-rotate, so we use it
+        // to keep currentCoin in sync without needing a separate rotate handler for it.
         sdk.dipArb.on('started', (market: any) => {
+          if (market.underlying) currentCoin = market.underlying as DipArbUnderlying;
           dashboardEmitter.updateStrategyStatus('dipArb', 'active', market.name);
-          dashboardEmitter.log('INFO', `DipArb started: ${market.name}`);
+          dashboardEmitter.log('INFO', `DipArb started: ${market.name} [${currentCoin}]`);
         });
 
         sdk.dipArb.on('orderbookUpdate', (update: { upPrice: number; downPrice: number; sum: number }) => {
@@ -267,12 +317,46 @@ async function main(): Promise<void> {
           }
         });
 
-        sdk.dipArb.on('signal', (signal: any) => {
-          const side: string = signal.dipSide ?? signal.hedgeSide ?? 'UP';
+        // autoExecute is always false — this handler drives all execution.
+        //
+        // Why manual execution instead of autoExecute: true?
+        // DipArbService emits 'signal' synchronously inside handleSignal(), then immediately
+        // calls executeLeg1/2 — before our async listener can complete a risk check.
+        // With autoExecute: false the service stops after emitting the signal, giving this
+        // handler full control over whether and when execution happens.
+        sdk.dipArb.on('signal', async (signal: DipArbSignal) => {
+          const side: string = isDipArbLeg1Signal(signal)
+            ? signal.dipSide
+            : signal.hedgeSide;
           dashboardEmitter.log(
             'SIGNAL',
-            `DipArb ${signal.type}: ${side} @ ${signal.currentPrice?.toFixed(3) ?? '?'}`,
+            `DipArb ${signal.type}: ${side} @ ${signal.currentPrice.toFixed(3)}`,
           );
+
+          // Paper mode: log only, no execution.
+          if (cfg.tradingMode !== 'live') return;
+
+          // Live mode: gate through risk manager before executing.
+          const marketId = signal.tokenId;
+          const price    = signal.currentPrice;
+          const sizeUsdc = isDipArbLeg1Signal(signal)
+            ? signal.estimatedTotalCost
+            : signal.totalCost;
+
+          const check = await riskManager.checkOrder('dip-arb', marketId, 'BUY', sizeUsdc, price);
+          if (!check.allowed) {
+            dashboardEmitter.log('WARN', `DipArb risk gate blocked: ${check.reason}`);
+            return;  // skip this signal — do not execute, do not mutate any config
+          }
+
+          // Risk check passed — execute manually and forward the result event.
+          const result = isDipArbLeg1Signal(signal)
+            ? await sdk.dipArb.executeLeg1(signal)
+            : await sdk.dipArb.executeLeg2(signal);
+
+          // In manual mode DipArbService does not emit 'execution'; we do it here so
+          // the 'execution' listener below still fires for dashboard logging.
+          sdk.dipArb.emit('execution', result);
         });
 
         sdk.dipArb.on('execution', (result: any) => {
@@ -286,14 +370,30 @@ async function main(): Promise<void> {
           }
         });
 
-        sdk.dipArb.on('roundComplete', (result: any) => {
+        sdk.dipArb.on('roundComplete', async (result: any) => {
           const profitStr = result.profit != null ? ` | net $${result.profit.toFixed(4)}` : '';
           dashboardEmitter.log('INFO', `DipArb round ${result.roundId}: ${result.status}${profitStr}`);
+
+          // Record realised P&L in the risk manager (updates daily loss tracker + Supabase).
+          if (result.profit != null) {
+            const marketId = result.marketId ?? result.conditionId ?? 'unknown';
+            try {
+              await riskManager.recordPnl('dip-arb', marketId, result.profit);
+            } catch (err) {
+              dashboardEmitter.log('WARN', `DipArb recordPnl failed: ${String(err)}`);
+            }
+          }
         });
 
-        sdk.dipArb.on('rotate', (event: any) => {
+        sdk.dipArb.on('rotate', async (event: any) => {
           dashboardEmitter.log('INFO', `DipArb rotated to new market (reason: ${event.reason})`);
           dashboardEmitter.updateStrategyStatus('dipArb', 'active');
+
+          // Re-fetch balance and recompute shares for the new coin.
+          // Note: 'started' fires before 'rotate' during auto-rotate, so currentCoin
+          // is already updated to the new underlying by the time we reach here.
+          const freshShares = await resolveShares(currentCoin);
+          sdk.dipArb.updateConfig({ shares: freshShares });
         });
 
         sdk.dipArb.on('stopped', () => {

@@ -33,6 +33,7 @@ export interface Config {
   tradingMode: 'paper' | 'live';
   maxPositionSizeUsdc: number;
   maxPositionPercentage: number;   // % of capital per trade (fixed-fraction)
+  positionSizePct: number;         // % of capital for dynamic position sizing (dip-arb)
   minPositionSizeUsdc: number;
   dailyLossLimitUsdc: number;
   minProfitThreshold: number;      // minimum edge (0–1) to enter a trade
@@ -130,6 +131,7 @@ export function loadConfig(): Config {
     tradingMode: tradingModeRaw,
     maxPositionSizeUsdc: optionalNum('MAX_POSITION_SIZE_USDC', 100),
     maxPositionPercentage: optionalNum('MAX_POSITION_PERCENTAGE', 2),
+    positionSizePct: optionalNum('POSITION_SIZE_PCT', 2),
     minPositionSizeUsdc: optionalNum('MIN_POSITION_SIZE_USDC', 10),
     dailyLossLimitUsdc: optionalNum('DAILY_LOSS_LIMIT_USDC', 50),
     minProfitThreshold: optionalNum('MIN_PROFIT_THRESHOLD', 0.05),
