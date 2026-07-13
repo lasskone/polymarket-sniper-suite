@@ -96,7 +96,8 @@ export function startDashboard(port = 3001): http.Server {
     }
 
     // Serve static files from dashboard/dist
-    const distPath = path.resolve(__dirname, '../../dashboard/dist');
+    // __dirname at runtime = <repo-root>/dist/src/dashboard — three levels up to reach repo root
+    const distPath = path.resolve(__dirname, '../../../dashboard/dist');
     let filePath = path.join(distPath, url.pathname === '/' ? 'index.html' : url.pathname);
 
     // Check if file exists
