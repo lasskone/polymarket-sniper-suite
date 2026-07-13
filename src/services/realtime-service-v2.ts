@@ -14,6 +14,7 @@
  */
 
 import { EventEmitter } from 'events';
+import WebSocket from 'ws';
 import {
   RealTimeDataClient,
   type Message,
@@ -249,11 +250,180 @@ export interface EquityPriceHandlers {
 }
 
 // ============================================================================
+// ClobMarketWsClient — direct WebSocket to Polymarket CLOB
+// ============================================================================
+
+/**
+ * Direct WebSocket client for wss://ws-subscriptions-clob.polymarket.com/ws/market
+ *
+ * RTDS (@polymarket/real-time-data-client) stopped serving clob_market topics
+ * (orderbook, price_change, last_trade_price) on the legacy ws-live-data host.
+ * This class replaces those subscriptions with the current CLOB WebSocket endpoint.
+ *
+ * Design:
+ *  • Token-ID set is cumulative — addTokenIds() subscribes only the new delta.
+ *  • On reconnect, all active tokenIds are re-subscribed in a single message.
+ *  • Sends "PING" every 10 s; "PONG" responses are silently discarded.
+ *  • Exponential back-off: starts at 1 s, doubles each attempt, caps at 30 s.
+ */
+class ClobMarketWsClient {
+  private static readonly WS_URL =
+    'wss://ws-subscriptions-clob.polymarket.com/ws/market';
+
+  private ws: WebSocket | null = null;
+  private readonly tokenIds = new Set<string>();
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDelay = 1_000; // ms; doubles each failure, capped at 30 s
+  private destroyed = false;
+
+  constructor(
+    private readonly onEvent: (
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) => void,
+    private readonly log: (msg: string) => void,
+  ) {}
+
+  /** Add token IDs to the subscription set; connects lazily if needed. */
+  addTokenIds(ids: string[]): void {
+    const fresh = ids.filter(id => !this.tokenIds.has(id));
+    if (fresh.length === 0) return;
+    fresh.forEach(id => this.tokenIds.add(id));
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.sendSubscribe(fresh);   // additive — only subscribe the new tokens
+    } else if (!this.ws) {
+      this.connect();              // will subscribe all tokenIds on open
+    }
+    // If readyState === CONNECTING, the 'open' handler will subscribe everything
+  }
+
+  /** Remove token IDs. Closes the socket when none remain. */
+  removeTokenIds(ids: string[]): void {
+    ids.forEach(id => this.tokenIds.delete(id));
+    if (this.tokenIds.size === 0) {
+      this.closeSocket();
+    }
+  }
+
+  /** Permanently shut down — prevents any further reconnects. */
+  destroy(): void {
+    this.destroyed = true;
+    this.closeSocket();
+  }
+
+  // --------------------------------------------------------------------------
+  // Private
+  // --------------------------------------------------------------------------
+
+  private connect(): void {
+    if (this.destroyed || this.ws) return;
+    this.log('ClobWs: connecting');
+    const ws = new WebSocket(ClobMarketWsClient.WS_URL);
+    this.ws = ws;
+
+    ws.on('open', () => {
+      this.log('ClobWs: connected');
+      this.reconnectDelay = 1_000; // reset back-off on successful connect
+      this.startPing();
+      if (this.tokenIds.size > 0) {
+        this.sendSubscribe([...this.tokenIds]);
+      }
+    });
+
+    ws.on('message', (data: WebSocket.RawData) => {
+      const raw = data.toString();
+      if (raw === 'PONG') return;
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        const msgs = Array.isArray(parsed) ? parsed : [parsed];
+        for (const msg of msgs as Record<string, unknown>[]) {
+          const eventType = msg['event_type'] as string | undefined;
+          if (eventType) this.onEvent(eventType, msg);
+        }
+      } catch {
+        // Silently discard malformed frames
+      }
+    });
+
+    ws.on('error', (err: Error) => {
+      // 'error' is always followed by 'close' in the ws library; log only
+      this.log(`ClobWs: error — ${err.message}`);
+    });
+
+    ws.on('close', (code: number) => {
+      this.log(`ClobWs: closed (code=${code})`);
+      this.stopPing();
+      this.ws = null;
+      if (!this.destroyed && this.tokenIds.size > 0) {
+        this.scheduleReconnect();
+      }
+    });
+  }
+
+  private sendSubscribe(ids: string[]): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(
+      JSON.stringify({
+        assets_ids:             ids,
+        type:                   'market',
+        initial_dump:           true,
+        level:                  2,
+        custom_feature_enabled: false,
+      }),
+    );
+    this.log(`ClobWs: subscribed to ${ids.length} token(s)`);
+  }
+
+  private startPing(): void {
+    this.pingTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send('PING');
+      }
+    }, 10_000);
+  }
+
+  private stopPing(): void {
+    if (this.pingTimer !== null) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    const delay = this.reconnectDelay;
+    this.log(`ClobWs: reconnecting in ${delay}ms`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30_000);
+  }
+
+  private closeSocket(): void {
+    this.stopPing();
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      // Remove the 'close' listener so the socket.close() call below does not
+      // trigger another reconnect cycle.
+      this.ws.removeAllListeners('close');
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+}
+
+// ============================================================================
 // RealtimeServiceV2 Implementation
 // ============================================================================
 
 export class RealtimeServiceV2 extends EventEmitter {
   private client: RealTimeDataClient | null = null;
+  private clobWs: ClobMarketWsClient | null = null;
   private config: RealtimeServiceConfig;
   private subscriptions: Map<string, Subscription> = new Map();
   private subscriptionIdCounter = 0;
@@ -305,6 +475,10 @@ export class RealtimeServiceV2 extends EventEmitter {
    * Disconnect from WebSocket server
    */
   disconnect(): void {
+    // Tear down the direct CLOB WebSocket (orderbook / price data)
+    this.clobWs?.destroy();
+    this.clobWs = null;
+
     if (this.client) {
       this.client.disconnect();
       this.client = null;
@@ -332,19 +506,12 @@ export class RealtimeServiceV2 extends EventEmitter {
    */
   subscribeMarkets(tokenIds: string[], handlers: MarketDataHandlers = {}): MarketSubscription {
     const subId = `market_${++this.subscriptionIdCounter}`;
-    const filterStr = JSON.stringify(tokenIds);
 
-    // Subscribe to all market data types
-    const subscriptions = [
-      { topic: 'clob_market', type: 'agg_orderbook', filters: filterStr },
-      { topic: 'clob_market', type: 'price_change', filters: filterStr },
-      { topic: 'clob_market', type: 'last_trade_price', filters: filterStr },
-      { topic: 'clob_market', type: 'tick_size_change', filters: filterStr },
-    ];
-
-    const subMsg = { subscriptions };
-    this.sendSubscription(subMsg);
-    this.subscriptionMessages.set(subId, subMsg);  // Store for reconnection
+    // Route market data through the direct CLOB WebSocket.
+    // RTDS (wss://ws-live-data.polymarket.com) no longer serves clob_market
+    // topics; ClobMarketWsClient connects to the current endpoint and handles
+    // its own PING/PONG heartbeat and exponential-backoff reconnect.
+    this.ensureClobWs().addTokenIds(tokenIds);
 
     // Register handlers
     const orderbookHandler = (book: OrderbookSnapshot) => {
@@ -386,9 +553,8 @@ export class RealtimeServiceV2 extends EventEmitter {
         this.off('priceChange', priceChangeHandler);
         this.off('lastTrade', lastTradeHandler);
         this.off('tickSizeChange', tickSizeHandler);
-        this.sendUnsubscription({ subscriptions });
+        this.clobWs?.removeTokenIds(tokenIds);
         this.subscriptions.delete(subId);
-        this.subscriptionMessages.delete(subId);  // Remove from reconnection list
       },
     };
 
@@ -1222,6 +1388,66 @@ export class RealtimeServiceV2 extends EventEmitter {
       spread,
       timestamp: book.timestamp,
     };
+  }
+
+  /** Lazily create and return the ClobMarketWsClient singleton. */
+  private ensureClobWs(): ClobMarketWsClient {
+    if (!this.clobWs) {
+      this.clobWs = new ClobMarketWsClient(
+        (eventType, payload) => this.handleClobWsEvent(eventType, payload),
+        (msg) => this.log(msg),
+      );
+    }
+    return this.clobWs;
+  }
+
+  /**
+   * Routes CLOB WebSocket events to the existing handleMarketMessage() parsers,
+   * normalising any field-shape differences between the CLOB WS format and the
+   * RTDS format that the parsers were originally written for.
+   *
+   * Shape differences confirmed against docs.polymarket.com (2026-07-13):
+   *
+   *  event_type         CLOB WS field            Parser expects (RTDS shape)
+   *  ─────────────────────────────────────────────────────────────────────────
+   *  "book"             asset_id at root ✓       payload.asset_id  — OK
+   *                     bids/asks {price,size} ✓  parseFloat — OK
+   *                     tick_size / min_order_size ABSENT → parsers default OK
+   *
+   *  "price_change"     asset_id INSIDE            payload.asset_id (root)
+   *                     price_changes[0].asset_id  — MISMATCH; backfill below
+   *
+   *  "last_trade_price" asset_id at root ✓         payload.asset_id  — OK
+   */
+  private handleClobWsEvent(
+    eventType: string,
+    payload: Record<string, unknown>,
+  ): void {
+    switch (eventType) {
+      case 'book':
+        this.handleMarketMessage('agg_orderbook', payload, Date.now());
+        break;
+
+      case 'price_change': {
+        // CLOB WS puts asset_id inside price_changes[0], not at the root.
+        // parsePriceChange() reads payload.asset_id — backfill it so the
+        // token filter in subscribeMarkets() can match the right subscriber.
+        const changes = payload['price_changes'] as Array<Record<string, unknown>> | undefined;
+        const rootAssetId = payload['asset_id'] as string | undefined;
+        const innerAssetId = changes?.[0]?.['asset_id'] as string | undefined;
+        const normalized: Record<string, unknown> =
+          rootAssetId ? payload : { ...payload, asset_id: innerAssetId ?? '' };
+        this.handleMarketMessage('price_change', normalized, Date.now());
+        break;
+      }
+
+      case 'last_trade_price':
+        this.handleMarketMessage('last_trade_price', payload, Date.now());
+        break;
+
+      default:
+        this.log(`ClobWs: unknown event_type "${eventType}"`);
+    }
   }
 
   private sendSubscription(msg: { subscriptions: Array<{ topic: string; type: string; filters?: string; clob_auth?: ClobApiKeyCreds }> }): void {
