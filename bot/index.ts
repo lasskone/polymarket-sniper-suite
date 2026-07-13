@@ -49,6 +49,8 @@ import { NegRiskArbService }         from '../src/services/negrisk-arb-service.j
 import { LogicArbService }           from '../src/services/logic-arb-service.js';
 import type { LogicArbSignal }       from '../src/services/logic-arb-types.js';
 import { computeShares }             from '../src/services/dip-arb-sizing.js';
+import { SportsbookArbService }      from '../src/services/sportsbook-arb-service.js';
+import type { SportsbookArbSignal }  from '../src/services/sportsbook-arb-types.js';
 
 // ---------------------------------------------------------------------------
 // Step 1: Error handlers — registered before anything else so no exception
@@ -572,6 +574,87 @@ async function main(): Promise<void> {
           });
         } finally {
           logicArb.stop();
+        }
+      },
+    },
+    {
+      name:    'sportsbook-arb',
+      enabled: process.env.ENABLE_SPORTSBOOK_ARB === 'true',
+      run:     async (): Promise<void> => {
+        // Detection-only: polls OddsPapi for upcoming sports fixtures, fetches
+        // Pinnacle + Polymarket odds in a single request (OddsPapi includes
+        // Polymarket as a native bookmaker slug — no event matching needed),
+        // and emits 'signal' when edge net of fees clears minNetProfitUSD.
+        //
+        // ⚠️  DIRECTIONAL BET — NOT RISK-FREE ARBITRAGE.
+        // Signals represent expected-value opportunities; the underlying event
+        // can resolve against us. Treat confidence < negRisk/logicArb bots.
+        if (!cfg.oddspapiKey) {
+          dashboardEmitter.log(
+            'WARN',
+            'SportsbookArb: ODDSPAPI_KEY not set — module disabled. ' +
+            'Set ODDSPAPI_KEY in environment to enable.',
+          );
+          return;
+        }
+
+        const sbArb = new SportsbookArbService(cfg.oddspapiKey);
+        sbArb.updateConfig({
+          sportIds:        [7, 10],   // 7 = Basketball (NBA), 10 = Soccer
+          lookaheadDays:   3,
+          scanIntervalMs:  300_000,   // 5 minutes
+          minEdge:         0.05,      // 5 percentage-point minimum
+          minNetProfitUSD: 0.05,
+          shares:          10,
+        });
+
+        sbArb.on('started', () => {
+          dashboardEmitter.log('INFO', 'SportsbookArb scanner started (detection-only — directional bets)');
+        });
+
+        sbArb.on('scanned', (result: { fixturesTotal: number; fixturesWithPolymarket: number }) => {
+          dashboardEmitter.log(
+            'INFO',
+            `SportsbookArb scanned ${result.fixturesTotal} fixtures, ` +
+            `${result.fixturesWithPolymarket} had Polymarket coverage`,
+          );
+        });
+
+        sbArb.on('signal', (signal: SportsbookArbSignal) => {
+          for (const leg of signal.legs) {
+            dashboardEmitter.log(
+              'SIGNAL',
+              `SportsbookArb VALUE BET — ${signal.participant1Name} vs ${signal.participant2Name} ` +
+              `[${signal.tournamentName}] ` +
+              `outcome=${leg.outcomeName} ` +
+              `Pinnacle=${leg.pinnacleDecimalOdds.toFixed(3)}x → fair=${(leg.fairProbability * 100).toFixed(1)}% ` +
+              `vs Poly=${(leg.polymarketPrice * 100).toFixed(1)}% ` +
+              `edge=${(leg.edge * 100).toFixed(1)}pp ` +
+              `E[net]=$${leg.expectedNetProfitUSD.toFixed(4)} ` +
+              `conf=${(signal.confidence * 100).toFixed(0)}% ` +
+              `(detection only — directional bet, NOT risk-free)`,
+            );
+          }
+        });
+
+        sbArb.on('stopped', () => {
+          dashboardEmitter.log('INFO', 'SportsbookArb scanner stopped');
+        });
+
+        sbArb.on('error', (err: Error) => {
+          dashboardEmitter.log('ERROR', `SportsbookArb error: ${err.message}`);
+        });
+
+        await sbArb.start();
+
+        // Hold alive: SportsbookArbService drives itself via polling timer.
+        // Reject on the first unrecoverable error so runWithRestart resets.
+        try {
+          await new Promise<never>((_, reject) => {
+            sbArb.once('error', (err: Error) => reject(err));
+          });
+        } finally {
+          sbArb.stop();
         }
       },
     },

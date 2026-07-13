@@ -29,6 +29,9 @@ export interface Config {
   // API Football (API-Sports)
   apiFootballKey: string;
 
+  // OddsPapi (sports odds feed; includes Polymarket as a native bookmaker slug)
+  oddspapiKey: string;
+
   // Trading behaviour
   tradingMode: 'paper' | 'live';
   maxPositionSizeUsdc: number;
@@ -126,6 +129,9 @@ export function loadConfig(): Config {
 
     // API Football — required when latency sniper is enabled
     apiFootballKey: optionalStr('API_FOOTBALL_KEY', ''),
+
+    // OddsPapi — required when sportsbook-arb module is enabled
+    oddspapiKey: optionalStr('ODDSPAPI_KEY', ''),
 
     // Trading
     tradingMode: tradingModeRaw,
