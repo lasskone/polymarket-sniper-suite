@@ -115,6 +115,18 @@ export class NegRiskArbService extends EventEmitter {
   /** In-memory fee cache: conditionId → { bps, expiresAt } */
   private feeCache = new Map<string, FeeCacheEntry>();
 
+  /** Structured JSON log — visible in Railway log stream without a WebSocket client. */
+  private slog(level: string, message: string, data?: Record<string, unknown>): void {
+    const entry: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      level,
+      module: 'negrisk-arb',
+      message,
+    };
+    if (data) entry.data = data;
+    console.log(JSON.stringify(entry));
+  }
+
   /**
    * @param gammaApi       - Reuse the SDK's already-initialised Gamma API client
    *                         (access via `sdk.gammaApi`, public readonly on PolymarketSDK).
@@ -148,6 +160,7 @@ export class NegRiskArbService extends EventEmitter {
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
+    this.slog('INFO', 'NegRiskArb scanner started');
     this.emit('started');
 
     try {
@@ -166,6 +179,7 @@ export class NegRiskArbService extends EventEmitter {
       this.timer = null;
     }
     this.feeCache.clear();
+    this.slog('INFO', 'NegRiskArb scanner stopped');
     this.emit('stopped');
   }
 
@@ -243,6 +257,7 @@ export class NegRiskArbService extends EventEmitter {
       negRiskEvents: candidates.length,
       scannedAt:     Date.now(),
     };
+    this.slog('INFO', `NegRiskArb scanned ${events.length} events, ${candidates.length} NegRisk candidates`);
     this.emit('scanned', scanResult);
 
     for (const event of candidates) {
@@ -283,6 +298,7 @@ export class NegRiskArbService extends EventEmitter {
             outcomeCount: validMarkets.length,
             marketIds:    validMarkets.map(m => m.conditionId),
           };
+          this.slog('SIGNAL', `NegRiskArb LONG "${event.title}" Σ=${yesSum.toFixed(4)} dev=${(1-yesSum).toFixed(4)} net=$${net.toFixed(4)}`);
           this.emit('signal', signal);
         }
       }
@@ -302,6 +318,7 @@ export class NegRiskArbService extends EventEmitter {
             outcomeCount: validMarkets.length,
             marketIds:    validMarkets.map(m => m.conditionId),
           };
+          this.slog('SIGNAL', `NegRiskArb SHORT "${event.title}" Σ=${yesSum.toFixed(4)} dev=${(yesSum-1).toFixed(4)} net=$${net.toFixed(4)}`);
           this.emit('signal', signal);
         }
       }

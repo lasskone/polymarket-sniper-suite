@@ -600,7 +600,7 @@ async function main(): Promise<void> {
 
         const sbArb = new SportsbookArbService(cfg.oddspapiKey);
         sbArb.updateConfig({
-          sportIds:        [7, 10],   // 7 = Basketball (NBA), 10 = Soccer
+          sportIds:        [11, 10],  // 11 = Basketball (NBA), 10 = Soccer
           lookaheadDays:   3,
           scanIntervalMs:  300_000,   // 5 minutes
           minEdge:         0.05,      // 5 percentage-point minimum

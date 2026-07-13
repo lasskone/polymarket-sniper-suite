@@ -106,7 +106,7 @@ const PINNACLE_SLUG  = 'pinnacle';
 const POLYMARKET_SLUG = 'polymarket';
 
 const DEFAULT_CONFIG: SportsbookArbConfig = {
-  sportIds:       [7, 10],      // 7 = Basketball (NBA), 10 = Soccer
+  sportIds:       [11, 10],     // 11 = Basketball (NBA), 10 = Soccer
   lookaheadDays:  3,
   scanIntervalMs: 300_000,      // 5 minutes
   minEdge:        0.05,         // 5 percentage points minimum
@@ -202,12 +202,14 @@ export class SportsbookArbService extends EventEmitter {
 
   /** Fetches upcoming fixtures for a given sport within the lookahead window. */
   private async fetchFixtures(sportId: number): Promise<OddspapiFixture[]> {
-    const now     = new Date();
-    const end     = new Date(now.getTime() + this.cfg.lookaheadDays * 86_400_000);
-    const dateFrom = now.toISOString().slice(0, 10);
-    const dateTo   = end.toISOString().slice(0, 10);
+    const now = new Date();
+    const end = new Date(now.getTime() + this.cfg.lookaheadDays * 86_400_000);
+    // OddsPapi v4 requires full ISO 8601 datetime strings (YYYY-MM-DDTHH:MM:SSZ),
+    // not bare date-only strings. Params are `from` and `to` (not `dateFrom`/`dateTo`).
+    const from = now.toISOString().replace(/\.\d{3}Z$/, 'Z');  // strip ms: ...Z
+    const to   = end.toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-    const res = await fetch(this.url('/fixtures', { sportId, dateFrom, dateTo }));
+    const res = await fetch(this.url('/fixtures', { sportId, from, to }));
     if (!res.ok) {
       throw new Error(`OddsPapi /fixtures failed: ${res.status} ${res.statusText}`);
     }

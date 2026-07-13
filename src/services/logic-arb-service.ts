@@ -109,6 +109,18 @@ export class LogicArbService extends EventEmitter {
   /** In-memory fee cache: conditionId → { bps, expiresAt } */
   private feeCache = new Map<string, FeeCacheEntry>();
 
+  /** Structured JSON log — visible in Railway log stream without a WebSocket client. */
+  private slog(level: string, message: string, data?: Record<string, unknown>): void {
+    const entry: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      level,
+      module: 'logic-arb',
+      message,
+    };
+    if (data) entry.data = data;
+    console.log(JSON.stringify(entry));
+  }
+
   /**
    * @param gammaApi       - Gamma API client for market price lookups.
    * @param supabase       - Supabase client for reading correlated_market_pairs.
@@ -142,6 +154,7 @@ export class LogicArbService extends EventEmitter {
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
+    this.slog('INFO', 'LogicArb scanner started');
     this.emit('started');
 
     try {
@@ -160,6 +173,7 @@ export class LogicArbService extends EventEmitter {
       this.timer = null;
     }
     this.feeCache.clear();
+    this.slog('INFO', 'LogicArb scanner stopped');
     this.emit('stopped');
   }
 
@@ -228,6 +242,26 @@ export class LogicArbService extends EventEmitter {
       .eq('active', true);
 
     if (error) {
+      // PGRST205 = PostgREST schema cache miss — the table does not exist yet.
+      // Treat as an empty scan rather than a crash so the service keeps polling
+      // while the migration is pending. Emit 'warn' (not 'error') so runWithRestart
+      // doesn't restart in a tight loop.
+      const isTableMissing =
+        (error as { code?: string }).code === 'PGRST205' ||
+        error.message.includes('schema cache');
+
+      if (isTableMissing) {
+        console.log(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: 'WARN',
+          module: 'logic-arb',
+          message: 'correlated_market_pairs table not found — migration pending; scan skipped',
+        }));
+        // Emit a graceful empty scan result so the 'scanned' listener still fires.
+        this.emit('scanned', { pairsTotal: 0, pairsScanned: 0, scannedAt: Date.now() });
+        return;
+      }
+
       throw new Error(`LogicArbService: failed to fetch pairs: ${error.message}`);
     }
 
@@ -288,6 +322,7 @@ export class LogicArbService extends EventEmitter {
         trade:        logicArbTradeLegs(pair.relationship, priceA, priceB),
       };
 
+      this.slog('SIGNAL', `LogicArb ${pair.relationship} "${pair.market_a_slug}" / "${pair.market_b_slug}" dev=${signal.deviation.toFixed(4)} net=$${net.toFixed(4)}`);
       this.emit('signal', signal);
     }
 
@@ -296,6 +331,7 @@ export class LogicArbService extends EventEmitter {
       pairsScanned,
       scannedAt: Date.now(),
     };
+    this.slog('INFO', `LogicArb scanned ${pairsScanned}/${pairsTotal} pairs`);
     this.emit('scanned', scanResult);
   }
 }
