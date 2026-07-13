@@ -4,16 +4,11 @@ import {
   Header,
   BalanceCards,
   PnLPanel,
-  TrendIndicators,
-  StrategyGrid,
   OnChainStats,
   ActivityLog,
   ConfigPanel,
   ConnectionStatus,
   DipArbPanel,
-  ArbitragePanel,
-  SmartMoneyPanel,
-  QuickStats,
   SessionSummary,
   HistoryPage,
   PositionsPage,
@@ -24,6 +19,27 @@ import {
 } from './components';
 
 type Page = 'dashboard' | 'history' | 'positions';
+
+function SectionDivider({ label, color }: { label: string; color: 'emerald' | 'amber' | 'slate' }) {
+  const lineClass = color === 'emerald'
+    ? 'via-emerald-500/20'
+    : color === 'amber'
+    ? 'via-amber-500/20'
+    : 'via-white/10';
+  const labelClass = color === 'emerald'
+    ? 'text-emerald-400/50'
+    : color === 'amber'
+    ? 'text-amber-400/50'
+    : 'text-white/20';
+
+  return (
+    <div className="flex items-center gap-4 my-1">
+      <div className={`flex-1 h-px bg-gradient-to-r from-transparent ${lineClass} to-transparent`} />
+      <span className={`text-[10px] font-semibold tracking-[0.22em] uppercase ${labelClass}`}>{label}</span>
+      <div className={`flex-1 h-px bg-gradient-to-r from-transparent ${lineClass} to-transparent`} />
+    </div>
+  );
+}
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
@@ -43,81 +59,19 @@ function App() {
   };
 
   const handleToggleDryRun = () => {
-    if (!isDryRun) {
-      // Safety check when switching to DRY RUN? No, usually switching TO live needs check.
-      // Switching TO Live:
-      const confirm = window.confirm('⚠️ WARNING: You are switching to LIVE trading mode.\n\nReal funds will be used. Ensure you have loaded your Private Key and understand the risks.\n\nContinue?');
-      if (!confirm) return;
+    if (isDryRun) {
+      const ok = window.confirm(
+        '⚠️ WARNING: You are switching to LIVE trading mode.\n\nReal funds will be used. Continue?'
+      );
+      if (!ok) return;
     }
-    sendCommand('toggleDryRun', { enabled: !isDryRun }); // Payload expects target state? No, backend logic was `if (CONFIG.dryRun === !enable)` and `enable` was from `cmd.payload.enabled`. 
-    // Backend logic: `const enable = cmd.payload.enabled;` then `CONFIG.dryRun = !!enable;` 
-    // So if we want to enable LIVE (disable dryrun), we send enabled=false? 
-    // My backend logic says: `if (CONFIG.dryRun === !enable)` -> `CONFIG.dryRun = !enable` -> `CONFIG.dryRun = !!enable`.
-    // Wait. 
-    // If backend: `const enable = cmd.payload.enabled`. 
-    // If I send `enabled: true` (meaning "Enable Live"? or "Enable Dry Run"?). 
-    // Let's re-read backend.
-    // `const enable = cmd.payload.enabled;`
-    // `if (CONFIG.dryRun === !enable)` (Meaning dryRun matches 'enable'?? No, checking equality to inverse?)
-    // `CONFIG.dryRun = !enable`.
-    // If I send `enabled: true`. Then `!enable` is false. 
-    // If `CONFIG.dryRun` is `true`. `true === false` is false. No change.
-    // If `CONFIG.dryRun` is `false`. `false === false` is true. Enter block. `CONFIG.dryRun = false`.
-    // So `enabled: true` means "Set Dry Run = False" (Enable Live??).
-    // Let's look at `CONFIG.dryRun = !!enable` later in the block.
-    // Use clear key: `isLive`.
-    // Backend expects `enabled`. 
-    // Let's assume `enabled` means "Is Live Enabled".
-    // If I am Dry Run (dryRun=true). I want to go Live.
-    // I send `enabled: true`.
-    // Backend: `enable = true`. `!enable` = false.
-    // `CONFIG.dryRun` (true) === false? No.
-    // Block skipped.
-
-    // ERROR IN BACKEND LOGIC DETECTED.
-    // Backend: `if (CONFIG.dryRun === !enable)`
-    // If `dryRun` is true. `!enable` must be true. `enable` must be false.
-    // So `enable=false`.
-    // Then `CONFIG.dryRun = !enable` -> `true`. NO CHANGE.
-
-    // Let's fix Frontend to send what works, or fix backend.
-    // I can't fix backend easily now without re-doing it.
-    // Let's re-read backend carefully.
-
-    /* 
-    if (CONFIG.dryRun === !enable) { // If dryRun is TRUE, and enable is FALSE. (Match!)
-        // LOGIC:
-        CONFIG.dryRun = !!enable; // dryRun becomes FALSE (Live).
-    }
-    */
-
-    // So if current `dryRun` is true. I want to set it to false.
-    // I must send `enable` such that `!enable` == `dryRun`.
-    // `!enable` == true -> `enable` == false.
-    // If I send `false`.
-    // `CONFIG.dryRun` = `!!false` = false. CORRECT.
-
-    // So `enabled` in payload means "Enable Dry Run?".
-    // If I want to enable Dry Run (go to dry run). I send `true`.
-    // If I want to disable Dry Run (go to live). I send `false`.
-    // Backend variable name `enable` is confusing but `CONFIG.dryRun = !!enable` confirms it sets dryRun status.
-
-    // Frontend Logic:
-    // Toggle: New state is `!isDryRun`.
-    // Send `enabled: !isDryRun`.
-    // e.g. If isDryRun=true. New is false. Send false.
-    // Backend: `enable`=false. `dryRun`(true) === `!false`(true). Match.
-    // `CONFIG.dryRun` = false. Live. Correct.
-
     sendCommand('toggleDryRun', { enabled: !isDryRun });
   };
 
-  // History page
   if (currentPage === 'history') {
     return <HistoryPage onBack={() => setCurrentPage('dashboard')} />;
   }
 
-  // Positions page
   if (currentPage === 'positions') {
     return (
       <PositionsPage
@@ -129,21 +83,10 @@ function App() {
     );
   }
 
-  // Main dashboard - Compact trading-focused layout
   return (
-    <div className={`min-h-screen bg-poly-dark text-white ${isDryRun ? 'dry-run-breathing' : 'live-mode-breathing'}`}>
-      {/* Mode Banner - Compact */}
-      <div className={`${isDryRun ? 'bg-red-500/20 border-red-500/30' : 'bg-green-500/20 border-green-500/30'} border-b px-4 py-1.5 text-center`}>
-        <span className={`${isDryRun ? 'text-red-400' : 'text-green-400'} font-medium text-xs flex items-center justify-center gap-2`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${isDryRun ? 'bg-red-400' : 'bg-green-400'} animate-pulse`} />
-          {isDryRun ? 'DRY RUN — No real trades' : 'LIVE — Real money trading'}
-        </span>
-      </div>
-
-      {/* Connection Status */}
+    <div className={`min-h-screen text-white ${isDryRun ? 'dry-run-breathing' : 'live-mode-breathing'}`}>
       <ConnectionStatus connected={connected} error={error} />
 
-      {/* Header */}
       <Header
         state={state}
         config={config}
@@ -153,64 +96,51 @@ function App() {
         onToggleDryRun={handleToggleDryRun}
       />
 
-      <main className="p-4 space-y-4 max-w-[1800px] mx-auto">
-        {/* Row 1: Quick Stats + Balances side by side */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <QuickStats state={state} config={config} />
+      <main className="px-4 pt-5 pb-8 space-y-5 max-w-[1800px] mx-auto">
+
+        {/* ── Section 1: Risk-Free Arb ── */}
+        <SectionDivider label="Risk-Free Arbitrage" color="emerald" />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <DipArbPanel state={state} config={config} />
+          <NegRiskArbPanel state={state} />
+          <LogicArbPanel state={state} />
+        </div>
+
+        {/* ── Section 2: Directional ── */}
+        <SectionDivider label="Directional" color="amber" />
+        <SportsbookArbPanel state={state} />
+
+        {/* ── Section 3: System ── */}
+        <SectionDivider label="System" color="slate" />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <PnLPanel state={state} config={config} />
+          <SessionSummary state={state} />
           <BalanceCards state={state} />
         </div>
 
-        {/* Row 2: Main Trading Grid - 4 columns */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          <DipArbPanel state={state} />
-          <ArbitragePanel state={state} />
-          <PnLPanel state={state} config={config} />
-          <SessionSummary state={state} />
+        {/* Controls + on-chain — slim row */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <StrategyControls config={config} onToggle={handleToggleStrategy} />
+          <OnChainStats state={state} />
         </div>
 
-        {/* Row 2b: Detection-only strategy panels */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <NegRiskArbPanel state={state} />
-          <LogicArbPanel state={state} />
-          <SportsbookArbPanel state={state} />
-        </div>
-
-        {/* Row 3: Smart Money (main) + Side Panel (Trends + Strategies + OnChain) */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2">
-            <SmartMoneyPanel state={state} />
-          </div>
-          <div className="space-y-3">
-            <StrategyControls config={config} onToggle={handleToggleStrategy} />
-            <TrendIndicators state={state} />
-            <StrategyGrid state={state} config={config} />
-            <OnChainStats state={state} />
-          </div>
-        </div>
-
-        {/* Row 4: Activity Log - Full Width at bottom */}
+        {/* Activity log — full width */}
         <ActivityLog logs={logs} />
 
-        {/* Config - Collapsible at bottom */}
+        {/* Advanced config — collapsible */}
         <details className="group">
-          <summary className="cursor-pointer text-gray-500 text-sm hover:text-gray-400 flex items-center gap-2 py-2">
+          <summary className="cursor-pointer flex items-center gap-2 text-[10px] text-white/20 hover:text-white/40 transition-colors py-1 select-none">
             <span className="transition-transform group-open:rotate-90">▶</span>
             Advanced Configuration
           </summary>
-          <div className="mt-2">
+          <div className="mt-3">
             <ConfigPanel config={config} />
           </div>
         </details>
       </main>
 
-      {/* Minimal Footer */}
-      <footer className="text-center py-3 border-t border-white/5 text-gray-600 text-xs">
-        <div className="flex flex-col gap-1">
-          <div>Polymarket Bot v3.0 • {connected ? '🟢 Connected' : '🔴 Disconnected'}</div>
-          <div>
-            Created by <a href="https://x.com/Mr_CryptoYT" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 transition-colors">@Mr_CryptoYT</a>
-          </div>
-        </div>
+      <footer className="text-center py-4 border-t border-white/[0.04] text-[10px] text-white/15">
+        Polymarket Bot · {connected ? 'Connected' : 'Disconnected'}
       </footer>
     </div>
   );
