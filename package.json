@@ -15,7 +15,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/bot/index.js",
+    "start": "node health.js",
     "dev": "tsx bot/index.ts",
     "prepublishOnly": "pnpm run build",
     "test": "vitest run",
