@@ -4,6 +4,10 @@ node_modules/
 # Build output
 dist/
 
+# Un-ignore the pre-built dashboard so Railway can serve it without re-building
+!dashboard/dist/
+!dashboard/dist/**
+
 # Environment variables
 .env
 .env.local
