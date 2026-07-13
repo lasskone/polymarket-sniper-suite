@@ -174,6 +174,33 @@ export interface Database {
         Relationships: Relationship[];
       };
 
+      correlated_market_pairs: {
+        Row: {
+          id: string;
+          market_a_condition_id: string;
+          market_b_condition_id: string;
+          market_a_slug: string;
+          market_b_slug: string;
+          relationship: 'a_implies_b' | 'mutually_exclusive';
+          notes: string | null;
+          active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          market_a_condition_id: string;
+          market_b_condition_id: string;
+          market_a_slug: string;
+          market_b_slug: string;
+          relationship: 'a_implies_b' | 'mutually_exclusive';
+          notes?: string | null;
+          active?: boolean;
+          created_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['correlated_market_pairs']['Insert']>;
+        Relationships: Relationship[];
+      };
+
       market_snapshots: {
         Row: {
           id: string;

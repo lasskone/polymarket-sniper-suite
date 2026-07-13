@@ -46,6 +46,8 @@ import {
   resolveEffectiveSumTarget,
 }                                    from '../src/services/dip-arb-types.js';
 import { NegRiskArbService }         from '../src/services/negrisk-arb-service.js';
+import { LogicArbService }           from '../src/services/logic-arb-service.js';
+import type { LogicArbSignal }       from '../src/services/logic-arb-types.js';
 import { computeShares }             from '../src/services/dip-arb-sizing.js';
 
 // ---------------------------------------------------------------------------
@@ -501,6 +503,75 @@ async function main(): Promise<void> {
           });
         } finally {
           negRisk.stop();
+        }
+      },
+    },
+    {
+      name:    'logic-arb',
+      enabled: process.env.ENABLE_LOGIC_ARB === 'true',
+      run:     async (): Promise<void> => {
+        // Detection-only: reads correlated_market_pairs from Supabase,
+        // fetches live prices via Gamma API, emits signals when mispricing
+        // clears minNetProfitUSD after taker fees. No order execution.
+        const sdk = await PolymarketSDK.create({
+          privateKey: process.env.POLYMARKET_PRIVATE_KEY,
+        });
+
+        const logicArb = new LogicArbService(sdk.gammaApi, supabase);
+        logicArb.updateConfig({
+          shares:          10,
+          minNetProfitUSD: 0.05,
+          scanIntervalMs:  60_000,
+        });
+
+        logicArb.on('started', () => {
+          dashboardEmitter.log('INFO', 'LogicArb scanner started');
+        });
+
+        logicArb.on('scanned', (result: { pairsTotal: number; pairsScanned: number }) => {
+          dashboardEmitter.log(
+            'INFO',
+            `LogicArb scanned ${result.pairsScanned}/${result.pairsTotal} pairs`,
+          );
+        });
+
+        logicArb.on('signal', (signal: LogicArbSignal) => {
+          const rel = signal.relationship === 'a_implies_b'
+            ? 'A→B'
+            : 'MUTEX';
+          dashboardEmitter.log(
+            'SIGNAL',
+            `LogicArb ${rel} — "${signal.marketASlug}" / "${signal.marketBSlug}" ` +
+            `[pA=${signal.priceA.toFixed(4)}, pB=${signal.priceB.toFixed(4)}, ` +
+            `dev=${signal.deviation.toFixed(4)}, net $${signal.netProfitUSD.toFixed(4)}] ` +
+            `trade: ${signal.trade.legA.token}-A @ ${signal.trade.legA.price.toFixed(4)}, ` +
+            `${signal.trade.legB.token}-B @ ${signal.trade.legB.price.toFixed(4)} ` +
+            `(detection only)`,
+          );
+        });
+
+        logicArb.on('feeRateFallback', (w: { conditionId: string; reason: string }) => {
+          dashboardEmitter.log('WARN', `LogicArb fee fallback for ${w.conditionId}: ${w.reason}`);
+        });
+
+        logicArb.on('stopped', () => {
+          dashboardEmitter.log('INFO', 'LogicArb scanner stopped');
+        });
+
+        logicArb.on('error', (err: Error) => {
+          dashboardEmitter.log('ERROR', `LogicArb error: ${err.message}`);
+        });
+
+        await logicArb.start();
+
+        // Hold alive: LogicArbService drives itself via polling timer.
+        // Reject on the first unrecoverable error so runWithRestart resets.
+        try {
+          await new Promise<never>((_, reject) => {
+            logicArb.once('error', (err: Error) => reject(err));
+          });
+        } finally {
+          logicArb.stop();
         }
       },
     },
