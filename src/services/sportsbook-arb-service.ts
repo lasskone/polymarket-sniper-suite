@@ -72,6 +72,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { createLogger } from '../../modules/shared/logger.js';
 import {
   SPORTS_FEE_RATE,
   exchangeSpreadToConfidence,
@@ -87,6 +88,8 @@ import {
   normalizeTeamName,
   type PolymarketSoccerMarket,
 } from './sportsbook-arb-matcher.js';
+
+const log = createLogger('sportsbook-arb');
 
 // ── OddsPapi type definitions ─────────────────────────────────────────────────
 
@@ -427,15 +430,13 @@ export class SportsbookArbService extends EventEmitter {
 
           // Polymarket-implied favourite — only available after Gamma matching.
           // Will be set below if matchResults are resolved without ambiguity.
-          this.emit(
-            'error',   // 'error' channel so bot/index.ts logs it as a WARNING — not fatal
-            new Error(
-              `[CONVENTION-CHECK] ${fixture.participant1Name} (home/101) vs ${fixture.participant2Name} (away/103) ` +
-              `| Betfair: home=${homeFair != null ? (homeFair * 100).toFixed(1) + '%' : 'n/a'} ` +
-              `away=${awayFair != null ? (awayFair * 100).toFixed(1) + '%' : 'n/a'} ` +
-              `→ fav=${betfairFav}`,
-            ),
-          );
+          log.debug('[CONVENTION-CHECK]', {
+            home:      fixture.participant1Name,
+            away:      fixture.participant2Name,
+            homeFair:  homeFair != null ? `${(homeFair * 100).toFixed(1)}%` : 'n/a',
+            awayFair:  awayFair != null ? `${(awayFair * 100).toFixed(1)}%` : 'n/a',
+            betfairFav,
+          });
         }
 
         // ── Match to Polymarket markets ──────────────────────────────────────
@@ -443,31 +444,25 @@ export class SportsbookArbService extends EventEmitter {
           fixture,
           gammaMarkets,
           (fixtureId, side, candidates) => {
-            this.emit(
-              'error',
-              new Error(
-                `SportsbookArb: ambiguous Polymarket match for fixture ${fixtureId} (${side} side). ` +
-                `${candidates.length} candidates: ` +
-                candidates.map((c) => `"${c.question}" [${c.conditionId.slice(0, 12)}…]`).join(' | ') +
-                ' — skipping this side.',
-              ),
-            );
+            log.info('Ambiguous Polymarket match — skipping side', {
+              fixtureId,
+              side,
+              candidates: candidates.map((c) => ({
+                question:    c.question,
+                conditionId: c.conditionId.slice(0, 12) + '…',
+              })),
+            });
           },
         );
 
         if (matchResults.length === 0) {
-          // Log "no match" for review — useful to catch alias gaps.
-          // Only log for fixtures that likely SHOULD have a Polymarket market
-          // (i.e. major leagues / known teams). We log all no-matches here;
-          // the operator can filter noise from small lower-division fixtures.
-          this.emit(
-            'error',
-            new Error(
-              `SportsbookArb: no Polymarket match for "${normalizeTeamName(fixture.participant1Name)}" ` +
-              `vs "${normalizeTeamName(fixture.participant2Name)}" ` +
-              `(${fixture.tournamentName}) — check TEAM_ALIASES if teams are listed on Polymarket`,
-            ),
-          );
+          // Debug-level: expected for most lower-division fixtures. Useful only
+          // when investigating alias gaps for major leagues.
+          log.debug('No Polymarket match for fixture', {
+            home:       normalizeTeamName(fixture.participant1Name),
+            away:       normalizeTeamName(fixture.participant2Name),
+            tournament: fixture.tournamentName,
+          });
           continue;
         }
 
