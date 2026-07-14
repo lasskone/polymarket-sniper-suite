@@ -247,7 +247,14 @@ export class SportsbookArbService extends EventEmitter {
       try {
         fixtures = await this.fetchFixtures(sportId);
       } catch (err) {
-        this.emit('error', err instanceof Error ? err : new Error(String(err)));
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('429')) {
+          // OddsPapi rate limit — skip this entire scan cycle gracefully.
+          // Do NOT emit 'error': a rate-limit is not a crash, and propagating
+          // it would cause bot/index.ts to restart the module unnecessarily.
+          return;
+        }
+        this.emit('error', err instanceof Error ? err : new Error(msg));
         continue;
       }
 
