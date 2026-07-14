@@ -6,9 +6,20 @@
  * ══════════════════════════════════════════════════════════════════════════════
  *
  * Polymarket prices for sports outcomes are often set by a thin pool of retail
- * liquidity rather than professional market makers. When the sharp consensus
- * (Pinnacle's line, one of the lowest-vig books) implies a materially different
- * probability than Polymarket's YES price, there is a value-betting edge.
+ * liquidity rather than professional market makers. When Betfair Exchange's
+ * consensus mid-price implies a materially different probability than
+ * Polymarket's YES price, there is a value-betting edge.
+ *
+ * Reference bookmaker: Betfair Exchange (betfair-ex)
+ *   Betfair is a peer-to-peer exchange with near-zero margin baked into
+ *   prices (commission is charged on NET WINNINGS separately, not spread into
+ *   odds). The mid-price between best back and best lay is the market's
+ *   consensus fair value — no overround de-vig is required.
+ *
+ * Polymarket prices: fetched directly from the Gamma API and matched to
+ *   Betfair fixtures by normalised team name + date window. This gives us
+ *   the real conditionId and token_id without relying on OddsPapi's
+ *   (unverified) bookmakerOutcomeId field.
  *
  * IMPORTANT: This is a DIRECTIONAL bet, not a risk-free arbitrage.
  * The underlying event can resolve against us. The "profit" computed here is
@@ -17,22 +28,28 @@
  * arbitrages produced by NegRiskArbService or LogicArbService.
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * De-vig method: Multiplicative (Proportional)
+ * Fair probability: Exchange mid-price
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * For n outcomes with decimal odds d₁, d₂, … dₙ:
- *   raw implied probability: rᵢ = 1 / dᵢ
- *   sum of raw probs (overround): K = Σ rᵢ  (> 1 due to bookmaker margin)
- *   fair probability: pᵢ = rᵢ / K
+ *   midPrice   = (bestBackPrice + bestLayPrice) / 2
+ *   fairProb   = 1 / midPrice   =   2 / (back + lay)
  *
- * Why multiplicative?
- *   1. Standard for 2-outcome markets; used by Pinnacle itself in their published
- *      margin guide.
- *   2. Unbiased: it scales all outcomes proportionally, favouring neither
- *      the favourite nor the underdog.
- *   3. Extends naturally to 3-outcome markets (soccer 1X2) without additional
- *      assumptions — just include the Draw odds.
- *   4. Simple, deterministic, no iteration required.
+ * Why NOT use the traditional overround de-vig formula here?
+ *   Betfair Exchange back prices already reflect near-true odds — the overround
+ *   from back prices alone is ~1.00–1.01 (vs 1.02–1.03 for Pinnacle). Dividing
+ *   by 1.005 barely changes anything and ignores the lay side entirely. The
+ *   lay price constrains fair value from ABOVE: the market consensus lies
+ *   between back and lay. Mid-price captures both sides.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * Confidence: exchange spread
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ *   fractional spread = (layPrice − backPrice) / midPrice
+ *   confidence        = clamp(1 − spread / MAX_SPREAD, 0, MAX_CONFIDENCE)
+ *
+ * Tighter back/lay spread → higher confidence in the mid-price. Capped at
+ * MAX_CONFIDENCE (0.90) because these are always directional bets.
  *
  * ══════════════════════════════════════════════════════════════════════════════
  * Fee
@@ -49,10 +66,10 @@
  * Live rate: GET https://clob.polymarket.com/markets/{conditionId}
  *             → response.taker_base_fee (integer, basis points)
  *
- * Note: SportsbookArbService cannot resolve per-market CLOB fees because
- * OddsPapi's response does not include a Polymarket conditionId (only the
- * ERC-1155 tokenId in exchangeMeta). SPORTS_FEE_RATE is therefore used as a
- * fixed cost assumption for all signals.
+ * Note: SportsbookArbService uses SPORTS_FEE_RATE as a fixed assumption.
+ * The real per-market fee is now available via conditionId (resolved through
+ * the Gamma match) but adding a CLOB fee lookup per scan cycle would double
+ * latency. Use SPORTS_FEE_RATE conservatively.
  */
 
 import {
@@ -107,24 +124,48 @@ export interface SportsbookArbConfig {
 
 /** One side of a value-bet signal (the outcome being priced). */
 export interface SportsbookArbLeg {
-  /** Outcome name as returned by OddsPapi (e.g. "Home", "Away", "Draw"). */
-  outcomeName: string;
   /**
-   * Pinnacle decimal odds for this outcome (e.g. 2.10).
-   * Decimal odds → implied prob = 1 / price.
+   * Which side of the Betfair 1X2 market this corresponds to.
+   * "home" = participant1 (OddsPapi outcomeId 101 convention).
+   * "away" = participant2 (OddsPapi outcomeId 103 convention).
    */
-  pinnacleDecimalOdds: number;
-  /** De-vigged fair probability implied by Pinnacle's line (0–1). */
+  outcomeName: 'home' | 'away';
+  /**
+   * Betfair Exchange best available back price (decimal odds > 1).
+   * This is the price at which you can BACK (bet for) this outcome.
+   */
+  betfairBackPrice: number;
+  /**
+   * Betfair Exchange best available lay price (decimal odds > back price).
+   * This is the price at which the market is willing to LAY (bet against).
+   */
+  betfairLayPrice: number;
+  /**
+   * Fair probability derived from the exchange mid-price.
+   * Formula: 2 / (betfairBackPrice + betfairLayPrice)
+   * This does NOT apply traditional overround de-vig — the exchange has
+   * near-zero margin in its prices; mid-price is already fair value.
+   */
   fairProbability: number;
   /**
-   * Polymarket YES price for this outcome (0–1), taken from
-   * exchangeMeta.back[0].cents — the native share price.
+   * Polymarket conditionId for this market, sourced from the Gamma API match.
+   * Used by the paper-trade resolver to query CLOB for settlement status.
+   */
+  polymarketConditionId: string;
+  /**
+   * The full Polymarket market question that was matched to this outcome.
+   * Included for logging and human review.
+   */
+  polymarketQuestion: string;
+  /**
+   * Polymarket YES price for this outcome (0–1), sourced from the Gamma API.
+   * This is the ask price for buying YES tokens on Polymarket.
    */
   polymarketPrice: number;
   /**
    * Edge: fairProbability − polymarketPrice.
-   * Positive = Polymarket is cheaper than Pinnacle's fair value → value bet on YES.
-   * Negative = Polymarket is overpriced.
+   * Positive = Polymarket underprices vs Betfair fair value → value bet on YES.
+   * Negative = Polymarket overpriced.
    */
   edge: number;
   /**
@@ -135,6 +176,13 @@ export interface SportsbookArbLeg {
    * The trade can lose money if the event resolves against us.
    */
   expectedNetProfitUSD: number;
+  /**
+   * Polymarket ERC-1155 YES token ID for this market.
+   * Sourced from CLOB GET /markets/{conditionId} → tokens[outcome="Yes"].token_id.
+   * Used by the paper-trade resolver to determine outcome on settlement.
+   * May be undefined if the CLOB lookup failed at signal time.
+   */
+  tokenId?: string;
 }
 
 /**
@@ -148,34 +196,34 @@ export interface SportsbookArbLeg {
 export interface SportsbookArbSignal {
   /** OddsPapi fixture ID, e.g. "id1000003969653792". */
   fixtureId: string;
-  /** OddsPapi market ID containing these outcomes, e.g. "101". */
-  marketId: string;
-  /** Home team / participant 1 name. */
+  /** OddsPapi market ID containing these outcomes (e.g. "101" = 1X2). */
+  betfairMarketId: string;
+  /** Home team / participant 1 name (as returned by OddsPapi). */
   participant1Name: string;
-  /** Away team / participant 2 name. */
+  /** Away team / participant 2 name (as returned by OddsPapi). */
   participant2Name: string;
-  /** Sport name (e.g. "Soccer", "Basketball"). */
+  /** Sport name (e.g. "Soccer"). */
   sportName: string;
   /** Tournament / league name. */
   tournamentName: string;
-  /** Match kick-off / tip-off time (ISO 8601). */
+  /** Match kick-off time (ISO 8601). */
   startTime: string;
   /**
-   * The specific outcome(s) where Polymarket underprices vs Pinnacle.
-   * Typically 1 entry; multiple if both sides show edge simultaneously
-   * (can happen with stale Polymarket prices).
+   * Value-bet legs where Polymarket underprices vs Betfair Exchange fair value.
+   * Typically 1 entry; may be 2 if both home and away sides show edge.
    */
   legs: SportsbookArbLeg[];
   /**
-   * Bookmaker overround for the Pinnacle line used in de-vig.
-   * E.g. 1.022 = 2.2% margin. Lower overround → more reliable fair probability.
+   * Fractional back-lay spread for the primary leg's Betfair outcome.
+   * Formula: (layPrice − backPrice) / midPrice
+   * Smaller spread = more liquid = higher confidence in mid-price fair value.
    */
-  pinnacleOverround: number;
+  betfairSpread: number;
   /**
-   * Confidence factor (0–1). Computed as:
-   *   1 − pinnacleOverround_excess / max_expected_overround
-   * Lower overround → higher confidence in the de-vigged fair probability.
-   * Always treat this as directional/speculative; confidence is never 1.0.
+   * Confidence factor (0–1). Computed from the Betfair back-lay spread:
+   *   1 − spread / MAX_SPREAD, capped at MAX_CONFIDENCE (0.90).
+   * Tighter spread → higher confidence in the fair probability.
+   * Always directional/speculative; never reaches 1.0.
    */
   confidence: number;
   /** Number of shares used in expectedNetProfitUSD calculation. */
@@ -186,15 +234,97 @@ export interface SportsbookArbSignal {
 
 /** Emitted after each scan cycle completes. */
 export interface SportsbookArbScanResult {
-  /** Total fixtures polled from OddsPapi. */
+  /** Total fixtures polled from OddsPapi with Betfair Exchange odds. */
   fixturesTotal: number;
-  /** Fixtures that had Polymarket odds (Polymarket coverage is sparse on sports). */
-  fixturesWithPolymarket: number;
+  /**
+   * Fixtures successfully matched to at least one active Polymarket market
+   * via the team-name + date-window matcher. This replaces the old
+   * "fixturesWithPolymarket" count — Polymarket data is now fetched directly
+   * from the Gamma API rather than via OddsPapi.
+   */
+  fixturesMatchedToPolymarket: number;
   /** Timestamp of the scan. */
   scannedAt: number;
 }
 
 // ============= Pure Functions =============
+
+/**
+ * Fair probability from a Betfair Exchange back/lay pair.
+ *
+ * Exchange prices have near-zero bookmaker margin baked in; commission is
+ * charged on net winnings separately. The mid-price between best back and
+ * best lay is the market's consensus fair value.
+ *
+ * Formula: fairProb = 1 / midPrice = 2 / (backPrice + layPrice)
+ *
+ * Why NOT use traditional overround de-vig here:
+ *   Exchange back prices sum to ≈1.00 (vs 1.02–1.03 for Pinnacle). Dividing
+ *   by ≈1.005 barely changes anything and ignores the lay side. The lay price
+ *   constrains fair value from above; mid-price uses both constraints.
+ *
+ * This is a **pure function** — unit-testable with no dependencies.
+ *
+ * @param backPrice - Best available back price (decimal odds, must be > 1)
+ * @param layPrice  - Best available lay price (decimal odds, must be > backPrice)
+ * @returns Fair probability (0–1)
+ * @throws Error if backPrice ≤ 1 or layPrice ≤ backPrice
+ *
+ * @example
+ * // France vs Spain: France back=3.45, lay=3.75
+ * midPriceFairProbability(3.45, 3.75)  // → 2/(3.45+3.75) = 0.2778 (27.8%)
+ */
+export function midPriceFairProbability(backPrice: number, layPrice: number): number {
+  if (backPrice <= 1) {
+    throw new Error(`midPriceFairProbability: backPrice must be > 1, got ${backPrice}`);
+  }
+  if (layPrice <= backPrice) {
+    throw new Error(
+      `midPriceFairProbability: layPrice (${layPrice}) must be > backPrice (${backPrice})`,
+    );
+  }
+  return 2 / (backPrice + layPrice);
+}
+
+/**
+ * Confidence score (0–MAX_CONFIDENCE) based on the Betfair Exchange back/lay
+ * fractional spread for a single outcome.
+ *
+ * Formula:
+ *   spread     = (layPrice − backPrice) / midPrice   (fractional, always > 0)
+ *   confidence = clamp(1 − spread / MAX_SPREAD, 0, MAX_CONFIDENCE)
+ *
+ * Tighter spread → higher market liquidity → more reliable mid-price fair value.
+ * MAX_SPREAD (10% fractional) = lower bound; any spread above this signals very
+ * thin liquidity, confidence = 0.
+ *
+ * Always capped at MAX_CONFIDENCE (0.90) — directional bets never reach full
+ * confidence regardless of how liquid the exchange market is.
+ *
+ * This is a **pure function** — unit-testable with no dependencies.
+ *
+ * @example
+ * // Tight liquid market: back=1.17, lay=1.20 → spread≈2.5% → high confidence
+ * exchangeSpreadToConfidence(1.17, 1.20)  // → ~0.75
+ *
+ * // Wide illiquid market: back=10.0, lay=12.0 → spread≈18% → confidence=0
+ * exchangeSpreadToConfidence(10.0, 12.0)  // → 0
+ */
+const MAX_SPREAD     = 0.10;  // 10% fractional spread = zero confidence threshold
+const MAX_CONFIDENCE = 0.90;  // directional bets never reach 100% confidence
+
+export function exchangeSpreadToConfidence(backPrice: number, layPrice: number): number {
+  const mid      = (backPrice + layPrice) / 2;
+  const spread   = (layPrice - backPrice) / mid;
+  const raw      = 1 - spread / MAX_SPREAD;
+  return Math.min(MAX_CONFIDENCE, Math.max(0, raw));
+}
+
+// ── Legacy functions retained for backward compatibility ──────────────────────
+// These were designed for traditional bookmakers with vig baked into odds
+// (e.g. Pinnacle). They are NOT used for Betfair Exchange prices.
+// Kept because they have existing unit tests and may be reused if a
+// traditional-bookmaker reference is ever added back.
 
 /**
  * Converts decimal odds for multiple outcomes to fair (de-vigged) probabilities
@@ -259,7 +389,7 @@ export function pinnacleOverround(decimalOdds: readonly number[]): number {
  * This is a **pure function** — unit-testable with no dependencies.
  */
 const MAX_OVERROUND_EXCESS = 0.03;  // 3% = upper end of Pinnacle's observed range
-const MAX_CONFIDENCE       = 0.90;  // directional bets are never full confidence
+// MAX_CONFIDENCE is defined above (shared with exchangeSpreadToConfidence).
 
 export function overroundToConfidence(overround: number): number {
   const excess = overround - 1;                               // how much above 1.0

@@ -7,8 +7,18 @@ export interface ModuleStat {
   lastTradeAt: string | null;
 }
 
+/** Sportsbook-arb positions resolve over time; shape differs from settled-only modules. */
+export interface SportsbookStat {
+  openCount: number;
+  wonCount: number;
+  lostCount: number;
+  settledNetProfitUsd: number;
+  /** null when no positions have settled yet. */
+  winRate: number | null;
+}
+
 export interface PaperStats {
-  byModule: Record<string, ModuleStat>;
+  byModule: Record<string, ModuleStat | SportsbookStat>;
   total: ModuleStat;
 }
 

@@ -201,6 +201,39 @@ export interface Database {
         Relationships: Relationship[];
       };
 
+      correlated_pair_suggestions: {
+        Row: {
+          id: string;
+          market_a_condition_id: string;
+          market_b_condition_id: string;
+          market_a_slug: string;
+          market_b_slug: string;
+          market_a_question: string;
+          market_b_question: string;
+          relationship: 'a_implies_b' | 'mutually_exclusive';
+          confidence: number;
+          reasoning: string;
+          status: 'pending' | 'approved' | 'rejected';
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          market_a_condition_id: string;
+          market_b_condition_id: string;
+          market_a_slug: string;
+          market_b_slug: string;
+          market_a_question: string;
+          market_b_question: string;
+          relationship: 'a_implies_b' | 'mutually_exclusive';
+          confidence: number;
+          reasoning: string;
+          status?: 'pending' | 'approved' | 'rejected';
+          created_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['correlated_pair_suggestions']['Insert']>;
+        Relationships: Relationship[];
+      };
+
       market_snapshots: {
         Row: {
           id: string;

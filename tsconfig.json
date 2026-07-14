@@ -18,6 +18,14 @@
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*", "scripts/dip-arb/**/*", "modules/**/*", "bot/**/*"],
+  "include": [
+    "src/**/*",
+    "scripts/dip-arb/**/*",
+    "scripts/suggest-correlated-pairs.ts",
+    "scripts/review-pair-suggestions.ts",
+    "scripts/approve-pair-suggestion.ts",
+    "modules/**/*",
+    "bot/**/*"
+  ],
   "exclude": ["node_modules", "dist", "poly-sdk"]
 }

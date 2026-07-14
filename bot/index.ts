@@ -53,6 +53,7 @@ import type { LogicArbSignal }       from '../src/services/logic-arb-types.js';
 import { computeShares }             from '../src/services/dip-arb-sizing.js';
 import { SportsbookArbService }      from '../src/services/sportsbook-arb-service.js';
 import type { SportsbookArbSignal }  from '../src/services/sportsbook-arb-types.js';
+import { runPaperTradeResolver }     from '../src/services/paper-trade-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Step 1: Error handlers — registered before anything else so no exception
@@ -716,10 +717,11 @@ async function main(): Promise<void> {
       name:    'sportsbook-arb',
       enabled: process.env.ENABLE_SPORTSBOOK_ARB === 'true',
       run:     async (): Promise<void> => {
-        // Detection-only: polls OddsPapi for upcoming sports fixtures, fetches
-        // Pinnacle + Polymarket odds in a single request (OddsPapi includes
-        // Polymarket as a native bookmaker slug — no event matching needed),
-        // and emits 'signal' when edge net of fees clears minNetProfitUSD.
+        // Detection-only: polls OddsPapi for Betfair Exchange (betfair-ex) odds,
+        // fetches Polymarket prices directly from the Gamma API, matches fixtures
+        // by normalised team name + date window, and emits 'signal' when the
+        // Betfair mid-price fair probability exceeds the Polymarket price by
+        // minEdge after fees.
         //
         // ⚠️  DIRECTIONAL BET — NOT RISK-FREE ARBITRAGE.
         // Signals represent expected-value opportunities; the underlying event
@@ -735,10 +737,14 @@ async function main(): Promise<void> {
 
         const sbArb = new SportsbookArbService(cfg.oddspapiKey);
         sbArb.updateConfig({
-          sportIds:        [11, 10],  // 11 = Basketball (NBA), 10 = Soccer
+          // Soccer only for now — NBA removed pending NBA Betfair Exchange coverage check.
+          sportIds:        [10],
           lookaheadDays:   3,
-          scanIntervalMs:  300_000,   // 5 minutes
-          minEdge:         0.05,      // 5 percentage-point minimum
+          // 1-minute scan interval covers live matches (Polymarket closes ~15 min post-kickoff).
+          // Pre-game fixtures are re-scanned every minute too; the Gamma cache (5 min TTL)
+          // means the Gamma API itself is called far less frequently than once per minute.
+          scanIntervalMs:  60_000,
+          minEdge:         0.05,
           minNetProfitUSD: 0.05,
           shares:          10,
         });
@@ -752,16 +758,16 @@ async function main(): Promise<void> {
           });
         });
 
-        sbArb.on('scanned', (result: { fixturesTotal: number; fixturesWithPolymarket: number }) => {
+        sbArb.on('scanned', (result: { fixturesTotal: number; fixturesMatchedToPolymarket: number }) => {
           dashboardEmitter.log(
             'INFO',
-            `SportsbookArb scanned ${result.fixturesTotal} fixtures, ` +
-            `${result.fixturesWithPolymarket} had Polymarket coverage`,
+            `SportsbookArb scanned ${result.fixturesTotal} Betfair fixtures, ` +
+            `${result.fixturesMatchedToPolymarket} matched to Polymarket (Gamma)`,
           );
           const cur = dashboardEmitter.getState();
           if (cur) {
             const ratio = result.fixturesTotal > 0
-              ? result.fixturesWithPolymarket / result.fixturesTotal
+              ? result.fixturesMatchedToPolymarket / result.fixturesTotal
               : 0;
             dashboardEmitter.updateState({
               ...cur,
@@ -782,13 +788,40 @@ async function main(): Promise<void> {
               `SportsbookArb VALUE BET — ${signal.participant1Name} vs ${signal.participant2Name} ` +
               `[${signal.tournamentName}] ` +
               `outcome=${leg.outcomeName} ` +
-              `Pinnacle=${leg.pinnacleDecimalOdds.toFixed(3)}x → fair=${(leg.fairProbability * 100).toFixed(1)}% ` +
+              `Betfair back=${leg.betfairBackPrice.toFixed(2)} lay=${leg.betfairLayPrice.toFixed(2)} ` +
+              `→ fair=${(leg.fairProbability * 100).toFixed(1)}% ` +
               `vs Poly=${(leg.polymarketPrice * 100).toFixed(1)}% ` +
               `edge=${(leg.edge * 100).toFixed(1)}pp ` +
               `E[net]=$${leg.expectedNetProfitUSD.toFixed(4)} ` +
               `conf=${(signal.confidence * 100).toFixed(0)}% ` +
+              `market="${leg.polymarketQuestion}" ` +
               `(detection only — directional bet, NOT risk-free)`,
             );
+
+            // conditionId comes directly from the Gamma API match — no CLOB scan needed.
+            // token_id was resolved in-service via CLOB GET /markets/{conditionId}.
+            // Both are now reliable. If token_id is missing (CLOB lookup failed),
+            // the paper-trade-resolver will re-derive it on settlement using conditionId.
+            const paperShares = Math.max(1, Math.floor(10 / leg.polymarketPrice));
+            const marketLabel = `${signal.participant1Name} vs ${signal.participant2Name} — ${leg.outcomeName}`;
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (supabase as any).from('paper_trades').insert({
+              module:         'sportsbook-arb',
+              market_label:   marketLabel,
+              net_profit_usd: null,
+              shares:         paperShares,
+              entry_price:    leg.polymarketPrice,
+              token_id:       leg.tokenId ?? null,
+              condition_id:   leg.polymarketConditionId,
+              status:         'open',
+              metadata:       signal as unknown as Record<string, unknown>,
+              trading_mode:   cfg.tradingMode,
+            }).then(({ error }: { error: { message: string } | null }) => {
+              if (error) {
+                dashboardEmitter.log('WARN', `SportsbookArb paper trade insert failed: ${error.message}`);
+              }
+            });
           }
           const cur = dashboardEmitter.getState();
           if (cur && signal.legs.length > 0) {
@@ -840,6 +873,14 @@ async function main(): Promise<void> {
           sbArb.stop();
         }
       },
+    },
+    {
+      // Runs alongside sportsbook-arb: polls Supabase every 10 min for open
+      // sportsbook-arb paper trades and resolves them via the Gamma API.
+      // Enabled whenever sportsbook-arb is enabled (same env flag).
+      name:    'paper-trade-resolver',
+      enabled: process.env.ENABLE_SPORTSBOOK_ARB === 'true',
+      run:     runPaperTradeResolver,
     },
     // market-making: not yet implemented
     {

@@ -186,6 +186,14 @@ export interface GammaMarket {
    * Category tags (e.g., ["crypto", "bitcoin", "finance"])
    */
   tags?: string[];
+
+  /**
+   * Event/group identifier from the Gamma API.
+   * Markets sharing the same groupId belong to the same Polymarket event.
+   * Used to exclude same-event pairs from cross-market correlation analysis
+   * (same-event binary outcomes are NegRisk's territory, not LogicArb's).
+   */
+  groupId?: string;
 }
 
 /**
@@ -594,6 +602,20 @@ export class GammaApiClient {
       image: m.image ? String(m.image) : undefined,
       icon: m.icon ? String(m.icon) : undefined,
       tags: m.tags ? this.parseJsonArray(m.tags, []) : undefined,
+      // groupId and eventId do NOT exist as top-level fields on Gamma API market
+      // objects (verified 2026-07-14). The event relationship is encoded as a
+      // nested array: market.events[0].id.
+      //
+      // "More Markets" sub-events carry a parentEventId pointing to the root
+      // event (also verified 2026-07-14 on real payloads). We resolve to the
+      // root so that sub-event markets and their parent-event siblings share the
+      // same groupId and are correctly treated as same-event.
+      groupId: (() => {
+        if (!Array.isArray(m.events)) return undefined;
+        const ev = (m.events as Array<{ id: string; parentEventId?: number | string }>)[0];
+        if (!ev?.id) return undefined;
+        return String(ev.parentEventId ?? ev.id);
+      })(),
     };
   }
 

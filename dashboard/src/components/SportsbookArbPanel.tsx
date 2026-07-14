@@ -1,10 +1,12 @@
 import type { BotState, SportsbookArbDashboardSignal } from '../types';
+import type { SportsbookStat } from '../hooks/usePaperStats';
 
 interface SportsbookArbPanelProps {
   state: BotState | null;
+  sbPaperStats?: SportsbookStat;
 }
 
-export function SportsbookArbPanel({ state }: SportsbookArbPanelProps) {
+export function SportsbookArbPanel({ state, sbPaperStats }: SportsbookArbPanelProps) {
   const sbArb = state?.sportsbookArb;
   const isLive = sbArb?.status === 'scanning';
   const coveragePct = (sbArb?.polymarketCoverageRatio ?? 0) * 100;
@@ -139,6 +141,45 @@ export function SportsbookArbPanel({ state }: SportsbookArbPanelProps) {
                 ))
               )}
             </div>
+          </div>
+
+          {/* Performance */}
+          <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(217,150,47,0.05)', border: '1px solid rgba(217,150,47,0.12)' }}>
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="font-jb text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Performance (simulated)</p>
+              <p className="font-jb text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                {(sbPaperStats?.openCount ?? 0) > 0
+                  ? `${sbPaperStats!.openCount} open`
+                  : `${(sbPaperStats?.wonCount ?? 0) + (sbPaperStats?.lostCount ?? 0)} settled`}
+              </p>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center mb-1.5">
+              <div>
+                <p className="font-jb text-[9px] mb-0.5" style={{ color: 'var(--text-muted)' }}>Open</p>
+                <p className="font-jb text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>{sbPaperStats?.openCount ?? 0}</p>
+              </div>
+              <div>
+                <p className="font-jb text-[9px] mb-0.5" style={{ color: 'var(--text-muted)' }}>Won</p>
+                <p className="font-jb text-xs font-semibold" style={{ color: 'var(--profit)' }}>{sbPaperStats?.wonCount ?? 0}</p>
+              </div>
+              <div>
+                <p className="font-jb text-[9px] mb-0.5" style={{ color: 'var(--text-muted)' }}>Lost</p>
+                <p className="font-jb text-xs font-semibold" style={{ color: 'var(--loss)' }}>{sbPaperStats?.lostCount ?? 0}</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <p className="font-jb text-sm font-semibold" style={{ color: (sbPaperStats?.settledNetProfitUsd ?? 0) >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+                {(sbPaperStats?.settledNetProfitUsd ?? 0) >= 0 ? '+' : ''}${(sbPaperStats?.settledNetProfitUsd ?? 0).toFixed(4)}
+              </p>
+              {sbPaperStats?.winRate != null && (
+                <p className="font-jb text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                  {(sbPaperStats.winRate * 100).toFixed(0)}% win rate
+                </p>
+              )}
+            </div>
+            <p className="font-inter text-[9px] mt-0.5" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+              Simulated — no real money moved
+            </p>
           </div>
 
           <details className="s-config">

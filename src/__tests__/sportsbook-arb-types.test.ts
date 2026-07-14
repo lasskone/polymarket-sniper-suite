@@ -3,15 +3,18 @@
  *
  * All functions are pure (no I/O) so tests are deterministic.
  * Tests cover:
- *   - devigOddsToProbability: balanced odds, favourite/underdog, 3-outcome,
- *     probability sum invariant, error cases
- *   - pinnacleOverround: correct calculation
- *   - overroundToConfidence: monotonicity and capping
+ *   - midPriceFairProbability: exchange mid-price formula (primary de-vig method)
+ *   - exchangeSpreadToConfidence: spread → confidence mapping
+ *   - devigOddsToProbability: legacy formula retained for reference (not used
+ *     in production with Betfair Exchange — exchanges have near-zero overround)
+ *   - pinnacleOverround / overroundToConfidence: legacy, retained for tests
  *   - netProfitValueBet: profitable edge, fee-eats-margin, at-parity, fee sensitivity
  */
 
 import { describe, it, expect } from 'vitest';
 import {
+  midPriceFairProbability,
+  exchangeSpreadToConfidence,
   devigOddsToProbability,
   pinnacleOverround,
   overroundToConfidence,
@@ -25,6 +28,128 @@ import {
 function legFee(shares: number, price: number, feeRate: number): number {
   return shares * feeRate * price * (1 - price);
 }
+
+// ─── midPriceFairProbability ──────────────────────────────────────────────────
+
+describe('midPriceFairProbability', () => {
+  it('formula: 2 / (back + lay)', () => {
+    // France vs Spain observed prices: back=3.45, lay=3.75
+    // mid = (3.45 + 3.75) / 2 = 3.60  →  fairProb = 1/3.60 ≈ 0.2778
+    expect(midPriceFairProbability(3.45, 3.75)).toBeCloseTo(2 / (3.45 + 3.75), 10);
+  });
+
+  it('symmetric: same spread, wider prices → lower probability', () => {
+    const p1 = midPriceFairProbability(1.17, 1.20);   // heavy favourite
+    const p2 = midPriceFairProbability(3.45, 3.75);   // moderate underdog
+    expect(p1).toBeGreaterThan(p2);
+    expect(p1).toBeCloseTo(2 / (1.17 + 1.20), 10);
+  });
+
+  it('heavy favourite: back=1.10, lay=1.12 → fairProb > 0.89', () => {
+    const p = midPriceFairProbability(1.10, 1.12);
+    expect(p).toBeGreaterThan(0.89);
+    expect(p).toBeLessThan(1.0);
+  });
+
+  it('evens-market equivalent: back=1.98, lay=2.02 → fairProb ≈ 0.50', () => {
+    expect(midPriceFairProbability(1.98, 2.02)).toBeCloseTo(0.50, 2);
+  });
+
+  it('throws if backPrice ≤ 1', () => {
+    expect(() => midPriceFairProbability(1.0, 1.5)).toThrow();
+    expect(() => midPriceFairProbability(0.9, 1.5)).toThrow();
+  });
+
+  it('throws if layPrice ≤ backPrice', () => {
+    expect(() => midPriceFairProbability(2.0, 2.0)).toThrow();
+    expect(() => midPriceFairProbability(2.0, 1.9)).toThrow();
+  });
+
+  it('result is always in (0, 1) for valid inputs', () => {
+    const pairs: [number, number][] = [
+      [1.01, 1.02], [1.5, 1.6], [2.0, 2.2], [5.0, 5.5], [20.0, 22.0],
+    ];
+    for (const [b, l] of pairs) {
+      const p = midPriceFairProbability(b, l);
+      expect(p).toBeGreaterThan(0);
+      expect(p).toBeLessThan(1);
+    }
+  });
+});
+
+// ─── exchangeSpreadToConfidence ───────────────────────────────────────────────
+
+describe('exchangeSpreadToConfidence', () => {
+  it('tight spread (≈2.5%): high confidence close to MAX (0.90)', () => {
+    // back=1.17, lay=1.20 → mid=1.185 → spread=(0.03/1.185)≈2.53%
+    // confidence = min(0.90, 1 - 0.0253/0.10) = min(0.90, 0.747) = 0.747
+    const conf = exchangeSpreadToConfidence(1.17, 1.20);
+    const mid    = (1.17 + 1.20) / 2;
+    const spread = (1.20 - 1.17) / mid;
+    expect(conf).toBeCloseTo(Math.min(0.90, 1 - spread / 0.10), 10);
+    expect(conf).toBeLessThanOrEqual(0.90);
+    expect(conf).toBeGreaterThan(0.60);
+  });
+
+  it('zero spread is not possible (lay > back required), very tight → MAX_CONFIDENCE', () => {
+    // Spread as close to 0 as valid: back=1.99, lay=2.01 → ~1% spread
+    const conf = exchangeSpreadToConfidence(1.99, 2.01);
+    expect(conf).toBeLessThanOrEqual(0.90);
+    expect(conf).toBeGreaterThan(0.80);
+  });
+
+  it('exactly 10% fractional spread → confidence = 0', () => {
+    // back=2.0, lay = 2.0 * (1 + 0.10 * 2.0/1.0) ... let me compute:
+    // spread = (lay-back)/mid = 0.10 → lay-back = 0.10 * mid = 0.10 * (back+lay)/2
+    // Solving: lay - back = 0.05*(back+lay) → 0.95*lay = 1.05*back → lay = back*21/19
+    // For back=1.90: lay = 1.90 * 21/19 = 2.10 → mid=2.00 → spread=0.20/2.00=0.10 ✓
+    expect(exchangeSpreadToConfidence(1.90, 2.10)).toBeCloseTo(0, 2);
+  });
+
+  it('spread > 10%: confidence clamped to 0, not negative', () => {
+    expect(exchangeSpreadToConfidence(1.5, 2.5)).toBe(0);
+    expect(exchangeSpreadToConfidence(2.0, 4.0)).toBe(0);
+  });
+
+  it('confidence is monotonically decreasing as spread widens', () => {
+    const pairs: [number, number][] = [
+      [2.0, 2.02],   // ~1% spread
+      [2.0, 2.1],    // ~5% spread
+      [2.0, 2.2],    // ~9.5% spread
+      [2.0, 2.5],    // >10% → 0
+    ];
+    const confs = pairs.map(([b, l]) => exchangeSpreadToConfidence(b, l));
+    for (let i = 1; i < confs.length; i++) {
+      expect(confs[i]).toBeLessThanOrEqual(confs[i - 1]!);
+    }
+  });
+
+  it('always ≤ MAX_CONFIDENCE (0.90)', () => {
+    expect(exchangeSpreadToConfidence(1.01, 1.02)).toBeLessThanOrEqual(0.90);
+    expect(exchangeSpreadToConfidence(1.001, 1.002)).toBeLessThanOrEqual(0.90);
+  });
+});
+
+// ─── midPriceFairProbability + netProfitValueBet: round-trip ─────────────────
+
+describe('exchange fair probability → netProfitValueBet round-trip', () => {
+  it('Betfair France back=3.45 lay=3.75, Polymarket France-wins at 0.25 → positive EV', () => {
+    // Betfair mid-price: 2/(3.45+3.75) = 0.2778 (27.8%)
+    // Polymarket: 0.25 (25.0%)
+    // edge = 0.0278 → > minEdge (0.05 would not fire, but let's check the math)
+    const fair = midPriceFairProbability(3.45, 3.75);
+    expect(fair).toBeCloseTo(0.2778, 3);
+    const net = netProfitValueBet(fair, 0.25, 10, SPORTS_FEE_RATE);
+    expect(net).toBeGreaterThan(0);
+  });
+
+  it('Betfair back=1.83 lay=1.87, Polymarket at 0.50 → large positive EV', () => {
+    const fair = midPriceFairProbability(1.83, 1.87);  // ~0.537
+    expect(fair).toBeGreaterThan(0.50);
+    const net = netProfitValueBet(fair, 0.50, 10, SPORTS_FEE_RATE);
+    expect(net).toBeGreaterThan(0.20);
+  });
+});
 
 // ─── devigOddsToProbability ───────────────────────────────────────────────────
 

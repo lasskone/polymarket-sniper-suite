@@ -138,16 +138,16 @@ function App() {
           <section>
             <SectionLabel label="Risk-free arbitrage" color="var(--riskfree)" />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <DipArbPanel state={state} config={config} paperStats={paperStats.byModule['dip-arb']} />
-              <NegRiskArbPanel state={state} paperStats={paperStats.byModule['negrisk-arb']} />
-              <LogicArbPanel state={state} paperStats={paperStats.byModule['logic-arb']} />
+              <DipArbPanel state={state} config={config} paperStats={paperStats.byModule['dip-arb'] as import('./hooks/usePaperStats').ModuleStat | undefined} />
+              <NegRiskArbPanel state={state} paperStats={paperStats.byModule['negrisk-arb'] as import('./hooks/usePaperStats').ModuleStat | undefined} />
+              <LogicArbPanel state={state} paperStats={paperStats.byModule['logic-arb'] as import('./hooks/usePaperStats').ModuleStat | undefined} />
             </div>
           </section>
 
           {/* ── Directional ── */}
           <section>
             <SectionLabel label="Directional" color="var(--directional)" />
-            <SportsbookArbPanel state={state} />
+            <SportsbookArbPanel state={state} sbPaperStats={paperStats.byModule['sportsbook-arb'] as import('./hooks/usePaperStats').SportsbookStat | undefined} />
           </section>
 
           {/* ── System ── */}

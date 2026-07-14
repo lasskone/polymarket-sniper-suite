@@ -32,12 +32,29 @@ interface ModuleStat {
   lastTradeAt: string | null;
 }
 
+/** Sportsbook-arb positions can be open/pending; shape is distinct from settled modules. */
+interface SportsbookStat {
+  openCount: number;
+  wonCount: number;
+  lostCount: number;
+  settledNetProfitUsd: number;
+  /** null when no positions have settled yet (can't compute a meaningful rate). */
+  winRate: number | null;
+}
+
 function emptyModuleStat(): ModuleStat {
   return { tradeCount: 0, totalNetProfitUsd: 0, avgProfitPerTrade: 0, lastTradeAt: null };
 }
 
+function emptySportsbookStat(): SportsbookStat {
+  return { openCount: 0, wonCount: 0, lostCount: 0, settledNetProfitUsd: 0, winRate: null };
+}
+
 function emptyPaperStats() {
-  return { byModule: {} as Record<string, ModuleStat>, total: emptyModuleStat() };
+  return {
+    byModule: {} as Record<string, ModuleStat | SportsbookStat>,
+    total: emptyModuleStat(),
+  };
 }
 
 async function queryPaperStats() {
@@ -46,33 +63,71 @@ async function queryPaperStats() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data, error } = await (db as any)
       .from('paper_trades')
-      .select('module, net_profit_usd, opened_at');
+      .select('module, net_profit_usd, status, opened_at');
 
     if (error || !data || !Array.isArray(data)) return emptyPaperStats();
 
-    const byModule: Record<string, ModuleStat> = {};
+    const byModule: Record<string, ModuleStat | SportsbookStat> = {};
     const total = emptyModuleStat();
 
-    for (const row of data as Array<{ module: string; net_profit_usd: string | number; opened_at: string }>) {
+    for (const row of data as Array<{
+      module: string;
+      net_profit_usd: string | number | null;
+      status: string | null;
+      opened_at: string;
+    }>) {
       const m = row.module;
-      if (!byModule[m]) byModule[m] = emptyModuleStat();
-      const profit = Number(row.net_profit_usd);
-      byModule[m].tradeCount++;
-      byModule[m].totalNetProfitUsd += profit;
-      if (!byModule[m].lastTradeAt || row.opened_at > byModule[m].lastTradeAt!) {
-        byModule[m].lastTradeAt = row.opened_at;
-      }
-      total.tradeCount++;
-      total.totalNetProfitUsd += profit;
-      if (!total.lastTradeAt || row.opened_at > total.lastTradeAt) {
-        total.lastTradeAt = row.opened_at;
+
+      if (m === 'sportsbook-arb') {
+        // Sportsbook positions have open/won/lost lifecycle; track separately.
+        if (!byModule[m]) byModule[m] = emptySportsbookStat();
+        const sb = byModule[m] as SportsbookStat;
+        const status = row.status ?? 'open';
+        if (status === 'open') {
+          sb.openCount++;
+        } else if (status === 'won') {
+          sb.wonCount++;
+          sb.settledNetProfitUsd += Number(row.net_profit_usd ?? 0);
+        } else if (status === 'lost') {
+          sb.lostCount++;
+          sb.settledNetProfitUsd += Number(row.net_profit_usd ?? 0);
+        }
+        const settled = sb.wonCount + sb.lostCount;
+        sb.winRate = settled > 0 ? sb.wonCount / settled : null;
+
+        // Only count settled sportsbook trades in the total (open positions have no realised P&L).
+        if (status === 'won' || status === 'lost') {
+          total.tradeCount++;
+          total.totalNetProfitUsd += Number(row.net_profit_usd ?? 0);
+          if (!total.lastTradeAt || row.opened_at > total.lastTradeAt) {
+            total.lastTradeAt = row.opened_at;
+          }
+        }
+      } else {
+        // Risk-free settled modules: net_profit_usd is always non-null.
+        if (!byModule[m]) byModule[m] = emptyModuleStat();
+        const stat = byModule[m] as ModuleStat;
+        const profit = Number(row.net_profit_usd ?? 0);
+        stat.tradeCount++;
+        stat.totalNetProfitUsd += profit;
+        if (!stat.lastTradeAt || row.opened_at > stat.lastTradeAt) {
+          stat.lastTradeAt = row.opened_at;
+        }
+        total.tradeCount++;
+        total.totalNetProfitUsd += profit;
+        if (!total.lastTradeAt || row.opened_at > total.lastTradeAt) {
+          total.lastTradeAt = row.opened_at;
+        }
       }
     }
 
     for (const m of Object.keys(byModule)) {
-      byModule[m].avgProfitPerTrade = byModule[m].tradeCount > 0
-        ? byModule[m].totalNetProfitUsd / byModule[m].tradeCount
-        : 0;
+      if (m !== 'sportsbook-arb') {
+        const stat = byModule[m] as ModuleStat;
+        stat.avgProfitPerTrade = stat.tradeCount > 0
+          ? stat.totalNetProfitUsd / stat.tradeCount
+          : 0;
+      }
     }
     total.avgProfitPerTrade = total.tradeCount > 0
       ? total.totalNetProfitUsd / total.tradeCount
