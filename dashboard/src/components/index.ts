@@ -1,4 +1,5 @@
 export { Header } from './Header';
+export { Sidebar } from './Sidebar';
 export { BalanceCards } from './BalanceCards';
 export { PnLPanel } from './PnLPanel';
 export { TrendIndicators } from './TrendIndicators';
@@ -22,4 +23,3 @@ export { StrategyControls } from './StrategyControls';
 export { NegRiskArbPanel } from './NegRiskArbPanel';
 export { LogicArbPanel } from './LogicArbPanel';
 export { SportsbookArbPanel } from './SportsbookArbPanel';
-

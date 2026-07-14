@@ -5,47 +5,48 @@ interface OnChainStatsProps {
 }
 
 export function OnChainStats({ state }: OnChainStatsProps) {
-  const splits = state?.splits ?? 0;
-  const merges = state?.merges ?? 0;
+  const splits  = state?.splits  ?? 0;
+  const merges  = state?.merges  ?? 0;
   const redeems = state?.redeems ?? 0;
-  const swaps = state?.swaps ?? 0;
-  const total = splits + merges + redeems + swaps;
+  const swaps   = state?.swaps   ?? 0;
+  const total   = splits + merges + redeems + swaps;
 
   const stats = [
-    { label: 'Splits', value: splits, color: 'bg-purple-500', icon: '✂️' },
-    { label: 'Merges', value: merges, color: 'bg-blue-500', icon: '🔗' },
-    { label: 'Redeems', value: redeems, color: 'bg-green-500', icon: '💸' },
-    { label: 'Swaps', value: swaps, color: 'bg-yellow-500', icon: '💱' },
+    { label: 'Splits',  value: splits  },
+    { label: 'Merges',  value: merges  },
+    { label: 'Redeems', value: redeems },
+    { label: 'Swaps',   value: swaps   },
   ];
 
   return (
-    <div className="glass-card rounded-xl p-3">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <span className="text-base">⛓️</span>
-          <span className="text-sm font-medium text-white">On-Chain Ops</span>
-        </div>
-        <span className="text-lg font-bold font-mono text-white">{total}</span>
+    <div className="s-card px-5 py-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>On-Chain Ops</h3>
+        <span className="font-jb text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>{total}</span>
       </div>
 
-      {/* Compact horizontal bar */}
-      <div className="h-2 rounded-full bg-gray-700 overflow-hidden flex mb-2">
-        {stats.map((stat) => (
-          <div
-            key={stat.label}
-            className={`h-full ${stat.color} transition-all duration-500`}
-            style={{ width: total > 0 ? `${(stat.value / total) * 100}%` : '25%' }}
-          />
-        ))}
+      {/* Stacked bar */}
+      <div className="flex h-1 rounded-full overflow-hidden mb-3" style={{ background: 'var(--border-strong)' }}>
+        {stats.map((s, i) => {
+          const colors = ['#a78bfa', 'var(--riskfree)', 'var(--profit)', '#f59e0b'];
+          return (
+            <div
+              key={s.label}
+              className="h-full transition-all duration-500"
+              style={{
+                width: total > 0 ? `${(s.value / total) * 100}%` : '25%',
+                background: colors[i],
+              }}
+            />
+          );
+        })}
       </div>
 
-      {/* Compact grid of stats */}
-      <div className="grid grid-cols-4 gap-1">
-        {stats.map((stat) => (
-          <div key={stat.label} className="text-center p-1.5 rounded bg-poly-dark/50">
-            <div className="text-xs mb-0.5">{stat.icon}</div>
-            <div className="text-sm font-bold font-mono text-white">{stat.value}</div>
-            <div className="text-[9px] text-gray-500">{stat.label}</div>
+      <div className="grid grid-cols-4 gap-2">
+        {stats.map((s) => (
+          <div key={s.label} className="text-center">
+            <p className="font-jb text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{s.value}</p>
+            <p className="font-jb text-[9px]" style={{ color: 'var(--text-muted)' }}>{s.label}</p>
           </div>
         ))}
       </div>

@@ -50,82 +50,91 @@ export function DipArbPanel({ state, config }: DipArbPanelProps) {
   }, [dipArb?.endTime]);
 
   const sum = dipArb?.sum ?? 0;
-  const sumOk = sum > 0 && sum <= 0.92;
+  const sumOk    = sum > 0 && sum <= 0.92;
   const sumClose = sum > 0.92 && sum <= 0.98;
 
   const coins = config?.dipArb?.coins ?? ['ETH', 'BTC', 'SOL'];
 
   const getSignalColor = (type: DipArbSignal['type']) => {
-    if (type === 'dip')  return 'text-red-400';
-    if (type === 'surge') return 'text-emerald-400';
-    if (type === 'leg1') return 'text-blue-400';
-    return 'text-purple-400';
+    if (type === 'dip')   return 'var(--loss)';
+    if (type === 'surge') return 'var(--profit)';
+    if (type === 'leg1')  return 'var(--riskfree)';
+    return '#a78bfa';
   };
 
+  const sumColor = sumOk ? 'var(--profit)' : sumClose ? '#f59e0b' : 'var(--text-secondary)';
+
   return (
-    <div className="glass-card card-emerald rounded-2xl overflow-hidden flex flex-col h-full">
+    <div className="s-card s-card-riskfree flex flex-col h-full">
       {/* Header */}
-      <div className="px-5 pt-5 pb-4 flex items-start justify-between">
+      <div className="flex items-start justify-between px-5 pt-5 pb-3">
         <div>
-          <p className="text-[10px] font-semibold tracking-[0.2em] uppercase text-emerald-400/60 mb-1">
-            Risk-Free · DipArb
+          <p className="font-jb text-[9px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>
+            Risk-free · DipArb
           </p>
-          <h2 className="text-base font-semibold text-white/90">DipArb Monitor</h2>
+          <h2 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+            DipArb Monitor
+          </h2>
         </div>
         {isActive ? (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold animate-pulse">
+          <span
+            className="font-jb text-[9px] px-2 py-0.5 rounded-full animate-pulse"
+            style={{ background: 'rgba(91,155,208,0.12)', border: '1px solid rgba(91,155,208,0.3)', color: 'var(--riskfree)' }}
+          >
             ● LIVE
           </span>
         ) : (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/30 font-semibold">
+          <span
+            className="font-jb text-[9px] px-2 py-0.5 rounded-full"
+            style={{ background: 'var(--glass)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+          >
             IDLE
           </span>
         )}
       </div>
 
-      <div className="px-5 pb-5 flex-1 flex flex-col gap-5">
-        {/* Live prices or idle state */}
+      <div className="px-5 pb-5 flex-1 flex flex-col gap-4">
         {isActive ? (
           <>
             {/* Market name */}
-            <p className="text-xs text-white/50 truncate -mt-1" title={dipArb?.marketName ?? ''}>
+            <p className="font-jb text-[10px] truncate -mt-1" style={{ color: 'var(--text-secondary)' }} title={dipArb?.marketName ?? ''}>
               {dipArb?.marketName}
             </p>
 
             {/* Price trio */}
-            <div className="grid grid-cols-3 gap-3 text-center">
+            <div className="grid grid-cols-3 gap-2 text-center">
               {[
-                { label: 'UP', value: dipArb?.upPrice ?? 0, color: 'text-emerald-400', history: upPriceHistory, hcolor: 'green' as const },
-                { label: 'DOWN', value: dipArb?.downPrice ?? 0, color: 'text-red-400', history: downPriceHistory, hcolor: 'red' as const },
-                { label: 'SUM', value: sum, color: sumOk ? 'text-emerald-400' : sumClose ? 'text-yellow-400' : 'text-white/60' },
+                { label: 'UP',   value: dipArb?.upPrice ?? 0,   color: 'var(--profit)',         history: upPriceHistory,   hcolor: 'green' as const },
+                { label: 'DOWN', value: dipArb?.downPrice ?? 0, color: 'var(--loss)',            history: downPriceHistory, hcolor: 'red'   as const },
+                { label: 'SUM',  value: sum,                     color: sumColor,                history: undefined,         hcolor: undefined },
               ].map(({ label, value, color, history, hcolor }) => (
                 <div key={label}>
-                  <p className="text-[10px] text-white/30 mb-1 font-medium">{label}</p>
-                  <p className={`text-xl font-bold font-mono ${color}`}>
+                  <p className="font-jb text-[9px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>{label}</p>
+                  <p className="font-jb text-lg font-semibold" style={{ color }}>
                     {value > 0 ? value.toFixed(3) : '—'}
                   </p>
                   {history && history.length > 1 && (
-                    <div className="mt-1.5 flex justify-center">
-                      <Sparkline data={history} width={56} height={16} color={hcolor} />
+                    <div className="mt-1 flex justify-center">
+                      <Sparkline data={history} width={52} height={14} color={hcolor!} />
                     </div>
                   )}
                 </div>
               ))}
             </div>
 
-            {/* Sum status */}
+            {/* Sum status bar */}
             {sum > 0 && (
               <div>
-                <div className="flex justify-between text-[10px] text-white/30 mb-1.5">
+                <div className="flex justify-between font-jb text-[9px] mb-1" style={{ color: 'var(--text-muted)' }}>
                   <span>Sum → target ≤ 0.92</span>
-                  <span className={sumOk ? 'text-emerald-400' : sumClose ? 'text-yellow-400' : 'text-white/50'}>
+                  <span style={{ color: sumColor }}>
                     {sumOk ? '🎯 Opportunity' : sumClose ? 'Close' : 'Normal'}
                   </span>
                 </div>
-                <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                <div className="h-px rounded-full" style={{ background: 'var(--border-strong)' }}>
                   <div
-                    className={`h-full rounded-full transition-all duration-300 ${sumOk ? 'bg-emerald-500' : sumClose ? 'bg-yellow-500' : 'bg-white/20'}`}
-                    style={{ width: `${Math.min(100, (sum / 1.05) * 100)}%` }}
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{ width: `${Math.min(100, (sum / 1.05) * 100)}%`, background: sumColor }}
                   />
                 </div>
               </div>
@@ -134,45 +143,44 @@ export function DipArbPanel({ state, config }: DipArbPanelProps) {
             {/* Time remaining */}
             {dipArb?.endTime && (
               <div>
-                <div className="flex justify-between text-[10px] text-white/30 mb-1.5">
+                <div className="flex justify-between font-jb text-[9px] mb-1" style={{ color: 'var(--text-muted)' }}>
                   <span>Time remaining</span>
-                  <span className="font-mono text-yellow-400/80">{timeRemaining}</span>
+                  <span style={{ color: '#f59e0b' }}>{timeRemaining}</span>
                 </div>
-                <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                <div className="h-px rounded-full" style={{ background: 'var(--border-strong)' }}>
                   <div
-                    className="h-full rounded-full bg-yellow-500/50 transition-all duration-1000"
-                    style={{ width: `${progress}%` }}
+                    className="h-full rounded-full transition-all duration-1000"
+                    style={{ width: `${progress}%`, background: 'rgba(245,158,11,0.6)' }}
                   />
                 </div>
               </div>
             )}
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center py-4">
-            <p className="text-2xl mb-2 opacity-30">🔍</p>
-            <p className="text-xs text-white/30">No active market</p>
-            <p className="text-[10px] text-white/20 mt-0.5">Waiting for next rotation…</p>
+          <div className="flex-1 flex flex-col items-center justify-center py-6 text-center">
+            <p className="font-inter text-xs mb-0.5" style={{ color: 'var(--text-muted)' }}>No active market</p>
+            <p className="font-inter text-[10px]" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+              Waiting for next rotation…
+            </p>
           </div>
         )}
 
-        <div className="inner-divider" />
-
-        {/* Recent signals */}
+        {/* Signals */}
         <div>
-          <div className="flex justify-between items-center mb-2.5">
-            <p className="text-[10px] font-semibold tracking-[0.15em] uppercase text-white/30">Signals</p>
-            <p className="text-[10px] text-white/20">{dipArb?.signals?.length ?? 0}</p>
+          <div className="flex justify-between items-center mb-2">
+            <p className="font-jb text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Signals</p>
+            <p className="font-jb text-[9px]" style={{ color: 'var(--text-muted)' }}>{dipArb?.signals?.length ?? 0}</p>
           </div>
-          <div className="space-y-1.5 max-h-28 overflow-y-auto">
+          <div className="space-y-1 max-h-24 overflow-y-auto">
             {(dipArb?.signals ?? []).length === 0 ? (
-              <p className="text-[11px] text-white/20 text-center py-3">Waiting for signals…</p>
+              <p className="font-jb text-[10px] text-center py-2" style={{ color: 'var(--text-muted)' }}>Waiting for signals…</p>
             ) : (
               (dipArb?.signals ?? []).slice(0, 5).map((sig) => (
-                <div key={sig.id} className="flex items-center justify-between text-xs">
-                  <span className={`font-semibold uppercase text-[10px] w-10 ${getSignalColor(sig.type)}`}>{sig.type}</span>
-                  <span className="text-white/40 w-8 text-center">{sig.side}</span>
-                  <span className="font-mono text-white/50">@{sig.price.toFixed(3)}</span>
-                  <span className={`font-mono text-[10px] ${sig.change > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                <div key={sig.id} className="flex items-center justify-between">
+                  <span className="font-jb text-[9px] uppercase w-8" style={{ color: getSignalColor(sig.type) }}>{sig.type}</span>
+                  <span className="font-jb text-[9px] w-8 text-center" style={{ color: 'var(--text-muted)' }}>{sig.side}</span>
+                  <span className="font-jb text-[9px]" style={{ color: 'var(--text-secondary)' }}>@{sig.price.toFixed(3)}</span>
+                  <span className="font-jb text-[9px]" style={{ color: sig.change > 0 ? 'var(--profit)' : 'var(--loss)' }}>
                     {sig.change > 0 ? '+' : ''}{sig.change.toFixed(1)}%
                   </span>
                 </div>
@@ -181,32 +189,18 @@ export function DipArbPanel({ state, config }: DipArbPanelProps) {
           </div>
         </div>
 
-        <div className="inner-divider" />
-
-        {/* Config expandable */}
-        <details className="config-details">
-          <summary className="flex items-center gap-1.5 text-[10px] text-white/25 hover:text-white/45 transition-colors cursor-pointer select-none">
-            <span className="chevron text-[8px]">▶</span>
-            Config
+        {/* Config */}
+        <details className="s-config">
+          <summary className="flex items-center gap-1.5">
+            <span className="s-chevron font-jb text-[8px]" style={{ color: 'var(--text-muted)' }}>▶</span>
+            <span className="font-jb text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Config</span>
           </summary>
-          <div className="mt-2 space-y-1.5 pl-3 border-l border-white/[0.06]">
-            <div className="stat-row">
-              <span className="stat-label">Sum target</span>
-              <span className="stat-value text-xs">≤ 0.92</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Coins</span>
-              <span className="stat-value text-xs">{Array.from(coins).join(' · ')}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Min profit</span>
-              <span className="stat-value text-xs">$0.05</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Poll interval</span>
-              <span className="stat-value text-xs">10 s</span>
-            </div>
-            <p className="text-[9px] text-white/15 mt-1.5 italic">hardcoded in service — not adjustable from dashboard</p>
+          <div className="mt-2 pl-3 space-y-1.5" style={{ borderLeft: '1px solid var(--border)' }}>
+            <div className="s-stat-row"><span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>Sum target</span><span className="font-jb text-[10px]" style={{ color: 'var(--text-secondary)' }}>≤ 0.92</span></div>
+            <div className="s-stat-row"><span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>Coins</span><span className="font-jb text-[10px]" style={{ color: 'var(--text-secondary)' }}>{Array.from(coins).join(' · ')}</span></div>
+            <div className="s-stat-row"><span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>Min profit</span><span className="font-jb text-[10px]" style={{ color: 'var(--text-secondary)' }}>$0.05</span></div>
+            <div className="s-stat-row"><span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>Poll interval</span><span className="font-jb text-[10px]" style={{ color: 'var(--text-secondary)' }}>10 s</span></div>
+            <p className="font-jb text-[9px] mt-1 italic" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>hardcoded — not adjustable from dashboard</p>
           </div>
         </details>
       </div>

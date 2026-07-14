@@ -1,118 +1,68 @@
 import type { BotConfig } from '../types';
 
 interface StrategyControlsProps {
-    config: BotConfig | null;
-    onToggle: (strategy: string, enabled: boolean) => void;
+  config: BotConfig | null;
+  onToggle: (strategy: string, enabled: boolean) => void;
 }
 
-interface ToggleProps {
-    label: string;
-    enabled: boolean;
-    icon: string;
-    color: string;
-    onChange: (enabled: boolean) => void;
+interface ToggleRowProps {
+  label: string;
+  enabled: boolean;
+  onChange: (enabled: boolean) => void;
+  disabled?: boolean;
 }
 
-function Toggle({ label, enabled, icon, color, onChange }: ToggleProps) {
-    return (
-        <div className="flex items-center justify-between p-3 rounded-xl bg-poly-dark/50 border border-white/5">
-            <div className="flex items-center gap-3">
-                <div className={`w-8 h-8 rounded-lg bg-${color}-500/20 flex items-center justify-center text-sm`}>
-                    {icon}
-                </div>
-                <span className="text-white font-medium">{label}</span>
-            </div>
-            <button
-                onClick={() => onChange(!enabled)}
-                className={`relative w-12 h-6 rounded-full transition-all duration-300 ${enabled ? `bg-${color}-500` : 'bg-gray-700'
-                    }`}
-            >
-                <div
-                    className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform duration-300 ${enabled ? 'translate-x-6' : 'translate-x-0'
-                        }`}
-                />
-            </button>
-        </div>
-    );
+function ToggleRow({ label, enabled, onChange, disabled }: ToggleRowProps) {
+  return (
+    <div className="s-stat-row">
+      <span className="font-inter text-xs" style={{ color: disabled ? 'var(--text-muted)' : 'var(--text-secondary)' }}>
+        {label}
+      </span>
+      <button
+        onClick={() => !disabled && onChange(!enabled)}
+        className="relative w-9 h-5 rounded-full transition-colors"
+        style={{
+          background: enabled ? (disabled ? 'rgba(91,155,208,0.3)' : 'var(--riskfree)') : 'var(--border-strong)',
+          cursor: disabled ? 'default' : 'pointer',
+        }}
+      >
+        <div
+          className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200"
+          style={{ left: enabled ? 'calc(100% - 18px)' : '2px' }}
+        />
+      </button>
+    </div>
+  );
 }
 
 export function StrategyControls({ config, onToggle }: StrategyControlsProps) {
-    if (!config) return null;
+  if (!config) return null;
 
-    // Only list strategies that have a real implementation wired in bot/index.ts.
-    // Stub strategies (smartMoney, arbitrage, directTrading) are omitted so they
-    // never appear as toggleable controls that send commands into the void.
-    const liveStrategies = [
-        {
-            key: 'dipArb',
-            label: 'DipArb (Crypto Short-Term)',
-            icon: '📉',
-            color: 'green',
-            enabled: config.dipArb?.enabled ?? false,
-        },
-    ];
-
-    const detectionStrategies = [
-        {
-            key: 'negRiskArb',
-            label: 'NegRisk Arb',
-            icon: '⚖️',
-            color: 'orange',
-            enabled: config.negRiskArb?.enabled ?? false,
-        },
-        {
-            key: 'logicArb',
-            label: 'Logic Arb',
-            icon: '🔗',
-            color: 'purple',
-            enabled: config.logicArb?.enabled ?? false,
-        },
-        {
-            key: 'sportsbookArb',
-            label: 'Sportsbook Arb',
-            icon: '🏆',
-            color: 'cyan',
-            enabled: config.sportsbookArb?.enabled ?? false,
-        },
-    ];
-
-    return (
-        <div className="panel">
-            <div className="panel-header">
-                <h3 className="section-header mb-0">
-                    <div className="section-header-icon bg-gradient-to-br from-purple-500/20 to-blue-500/20">⚙️</div>
-                    Strategy Controls
-                </h3>
-            </div>
-            <div className="panel-body space-y-2">
-                {liveStrategies.map((s) => (
-                    <Toggle
-                        key={s.key}
-                        label={s.label}
-                        icon={s.icon}
-                        color={s.color}
-                        enabled={s.enabled}
-                        onChange={(enabled) => onToggle(s.key, enabled)}
-                    />
-                ))}
-                <div className="text-xs text-gray-500 pt-1 pb-0.5 uppercase tracking-wider">
-                    Detection-only (read-only)
-                </div>
-                {detectionStrategies.map((s) => (
-                    <Toggle
-                        key={s.key}
-                        label={s.label}
-                        icon={s.icon}
-                        color={s.color}
-                        enabled={s.enabled}
-                        onChange={(enabled) => onToggle(s.key, enabled)}
-                    />
-                ))}
-                <div className="text-xs text-gray-500 mt-2 text-center leading-relaxed">
-                    DipArb: changes take effect immediately.<br />
-                    <span className="text-gray-600">Detection modules: env flag — restart required to toggle.</span>
-                </div>
-            </div>
+  return (
+    <div className="s-card">
+      <div className="px-5 pt-4 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <h3 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Strategy Controls</h3>
+      </div>
+      <div className="px-5 py-4 space-y-3">
+        <ToggleRow
+          label="DipArb (Crypto Short-Term)"
+          enabled={config.dipArb?.enabled ?? false}
+          onChange={(v) => onToggle('dipArb', v)}
+        />
+        <div className="pt-1" style={{ borderTop: '1px solid var(--border)' }}>
+          <p className="font-jb text-[9px] uppercase tracking-wider mb-2 mt-1" style={{ color: 'var(--text-muted)' }}>
+            Detection-only (env flag)
+          </p>
+          <div className="space-y-3">
+            <ToggleRow label="NegRisk Arb"    enabled={config.negRiskArb?.enabled ?? false}    onChange={(v) => onToggle('negRiskArb', v)}    disabled />
+            <ToggleRow label="Logic Arb"      enabled={config.logicArb?.enabled ?? false}      onChange={(v) => onToggle('logicArb', v)}      disabled />
+            <ToggleRow label="Sportsbook Arb" enabled={config.sportsbookArb?.enabled ?? false} onChange={(v) => onToggle('sportsbookArb', v)} disabled />
+          </div>
         </div>
-    );
+        <p className="font-jb text-[9px] pt-1" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+          DipArb: immediate. Detection modules: restart required.
+        </p>
+      </div>
+    </div>
+  );
 }

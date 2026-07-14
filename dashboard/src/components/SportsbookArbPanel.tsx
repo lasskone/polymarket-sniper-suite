@@ -10,133 +10,148 @@ export function SportsbookArbPanel({ state }: SportsbookArbPanelProps) {
   const coveragePct = (sbArb?.polymarketCoverageRatio ?? 0) * 100;
 
   return (
-    <div className="glass-card card-amber rounded-2xl overflow-hidden flex flex-col">
+    <div className="s-card s-card-directional">
       {/* Header */}
-      <div className="px-5 pt-5 pb-4 flex items-start justify-between">
+      <div className="flex items-start justify-between px-5 pt-5 pb-3">
         <div>
-          <p className="text-[10px] font-semibold tracking-[0.2em] uppercase text-amber-400/60 mb-1">
+          <p className="font-jb text-[9px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>
             Directional · Detection only
           </p>
-          <h2 className="text-base font-semibold text-white/90">Sportsbook Arb</h2>
+          <h2 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+            Sportsbook Arb
+          </h2>
         </div>
         {isLive ? (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 font-semibold animate-pulse">
+          <span
+            className="font-jb text-[9px] px-2 py-0.5 rounded-full animate-pulse"
+            style={{ background: 'rgba(217,150,47,0.12)', border: '1px solid rgba(217,150,47,0.3)', color: 'var(--directional)' }}
+          >
             ● LIVE
           </span>
         ) : (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/30 font-semibold">
+          <span
+            className="font-jb text-[9px] px-2 py-0.5 rounded-full"
+            style={{ background: 'var(--glass)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+          >
             IDLE
           </span>
         )}
       </div>
 
-      <div className="px-5 pb-5 flex flex-col gap-5">
-        {/* Not risk-free warning */}
-        <div className="flex items-center gap-2 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2">
-          <span className="text-amber-400 text-sm">⚡</span>
-          <p className="text-[10px] text-amber-300/70 font-medium">Not risk-free — directional bet on mispriced odds</p>
-        </div>
+      {/* Warning strip */}
+      <div
+        className="mx-5 mb-4 flex items-center gap-2 px-3 py-2 rounded-lg"
+        style={{ background: 'rgba(217,150,47,0.07)', border: '1px solid rgba(217,150,47,0.18)' }}
+      >
+        <span className="text-sm">⚡</span>
+        <p className="font-jb text-[9px]" style={{ color: 'rgba(217,150,47,0.8)' }}>
+          Not risk-free — directional bet on mispriced odds vs Pinnacle
+        </p>
+      </div>
 
-        {/* Scan counters + coverage bar */}
-        <div>
-          <div className="grid grid-cols-2 gap-4 mb-3">
+      <div className="px-5 pb-5 grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Left: counters + coverage */}
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <p className="text-[10px] text-white/30 mb-1 font-medium uppercase tracking-wider">Fixtures scanned</p>
-              <p className="text-2xl font-bold font-mono text-white/80">{sbArb?.fixturesScanned ?? 0}</p>
+              <p className="font-jb text-[9px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Fixtures</p>
+              <p className="font-jb text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>{sbArb?.fixturesScanned ?? 0}</p>
             </div>
             <div>
-              <p className="text-[10px] text-white/30 mb-1 font-medium uppercase tracking-wider">Poly coverage</p>
-              <p className="text-2xl font-bold font-mono text-amber-400">{coveragePct.toFixed(1)}%</p>
+              <p className="font-jb text-[9px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Coverage</p>
+              <p className="font-jb text-2xl font-semibold" style={{ color: 'var(--directional)' }}>{coveragePct.toFixed(1)}%</p>
             </div>
           </div>
-          <div className="flex justify-between text-[10px] text-white/25 mb-1.5">
-            <span>Polymarket coverage</span>
-            <span>{coveragePct.toFixed(1)}%</span>
-          </div>
-          <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
-            <div
-              className="h-full rounded-full bg-amber-500/60 transition-all duration-500"
-              style={{ width: `${Math.min(100, coveragePct)}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Last signal */}
-        {sbArb?.lastSignal ? (
           <div>
-            <p className="text-[10px] font-semibold tracking-[0.15em] uppercase text-white/30 mb-2">Last signal</p>
-            <p className="text-xs text-white/70 font-medium truncate mb-0.5">
-              {sbArb.lastSignal.participant1Name} <span className="text-white/30">vs</span> {sbArb.lastSignal.participant2Name}
-            </p>
-            <p className="text-[10px] text-white/35 mb-0.5 truncate">{sbArb.lastSignal.tournamentName}</p>
-            <p className="text-[10px] text-amber-400/70 mb-2">Outcome: {sbArb.lastSignal.outcomeName}</p>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { label: 'Edge', value: `${(sbArb.lastSignal.edge * 100).toFixed(1)}pp`, color: 'text-amber-400' },
-                { label: 'E[Net]', value: `$${sbArb.lastSignal.expectedNetProfitUSD.toFixed(3)}`, color: 'text-emerald-300' },
-                { label: 'Conf', value: `${(sbArb.lastSignal.confidence * 100).toFixed(0)}%`, color: 'text-white/60' },
-              ].map(({ label, value, color }) => (
-                <div key={label} className="text-center">
-                  <p className="text-[9px] text-white/25 mb-0.5">{label}</p>
-                  <p className={`text-xs font-mono font-semibold ${color}`}>{value}</p>
-                </div>
-              ))}
+            <div className="flex justify-between font-jb text-[9px] mb-1" style={{ color: 'var(--text-muted)' }}>
+              <span>Polymarket coverage</span><span>{coveragePct.toFixed(1)}%</span>
             </div>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center text-center py-3">
-            <p className="text-xl opacity-20 mb-1.5">🏆</p>
-            <p className="text-xs text-white/25">No signals yet</p>
-            <p className="text-[10px] text-white/15 mt-0.5">Comparing Pinnacle vs Polymarket odds…</p>
-          </div>
-        )}
-
-        <div className="inner-divider" />
-
-        {/* Recent signals */}
-        <div>
-          <div className="flex justify-between items-center mb-2.5">
-            <p className="text-[10px] font-semibold tracking-[0.15em] uppercase text-white/30">Signals</p>
-            <p className="text-[10px] text-white/20">{sbArb?.recentSignals?.length ?? 0}</p>
-          </div>
-          <div className="space-y-1.5 max-h-28 overflow-y-auto">
-            {(sbArb?.recentSignals ?? []).length === 0 ? (
-              <p className="text-[11px] text-white/20 text-center py-3">Waiting for signals…</p>
-            ) : (
-              (sbArb?.recentSignals ?? []).slice(0, 5).map((sig: SportsbookArbDashboardSignal, i: number) => (
-                <div key={`${sig.timestamp}-${i}`} className="flex items-center justify-between text-xs">
-                  <span className="text-white/45 truncate flex-1 text-[10px]">
-                    {sig.participant1Name} vs {sig.participant2Name}
-                  </span>
-                  <span className="font-mono text-amber-400 text-[10px] shrink-0 mx-2">
-                    {(sig.edge * 100).toFixed(1)}pp
-                  </span>
-                  <span className="font-mono text-emerald-300 text-[10px] shrink-0">
-                    ${sig.expectedNetProfitUSD.toFixed(2)}
-                  </span>
-                </div>
-              ))
-            )}
+            <div className="h-px rounded-full" style={{ background: 'var(--border-strong)' }}>
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${Math.min(100, coveragePct)}%`, background: 'rgba(217,150,47,0.6)' }}
+              />
+            </div>
           </div>
         </div>
 
-        <div className="inner-divider" />
+        {/* Center: last signal */}
+        <div>
+          <p className="font-jb text-[9px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>Last signal</p>
+          {sbArb?.lastSignal ? (
+            <>
+              <p className="font-inter text-xs font-medium truncate mb-0.5" style={{ color: 'var(--text-primary)' }}>
+                {sbArb.lastSignal.participant1Name} <span style={{ color: 'var(--text-muted)' }}>vs</span> {sbArb.lastSignal.participant2Name}
+              </p>
+              <p className="font-jb text-[10px] truncate mb-1" style={{ color: 'var(--text-muted)' }}>{sbArb.lastSignal.tournamentName}</p>
+              <p className="font-jb text-[10px] mb-2" style={{ color: 'var(--directional)' }}>
+                Outcome: {sbArb.lastSignal.outcomeName}
+              </p>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                {[
+                  { label: 'Edge',   value: `${(sbArb.lastSignal.edge * 100).toFixed(1)}pp`,          color: 'var(--directional)' },
+                  { label: 'E[Net]', value: `$${sbArb.lastSignal.expectedNetProfitUSD.toFixed(3)}`,   color: 'var(--profit)' },
+                  { label: 'Conf',   value: `${(sbArb.lastSignal.confidence * 100).toFixed(0)}%`,     color: 'var(--text-secondary)' },
+                ].map(({ label, value, color }) => (
+                  <div key={label}>
+                    <p className="font-jb text-[9px] mb-0.5" style={{ color: 'var(--text-muted)' }}>{label}</p>
+                    <p className="font-jb text-xs font-semibold" style={{ color }}>{value}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-4 text-center">
+              <p className="font-inter text-xs mb-0.5" style={{ color: 'var(--text-muted)' }}>No signals yet</p>
+              <p className="font-inter text-[10px]" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+                Comparing Pinnacle vs Polymarket odds…
+              </p>
+            </div>
+          )}
+        </div>
 
-        {/* Config expandable */}
-        <details className="config-details">
-          <summary className="flex items-center gap-1.5 text-[10px] text-white/25 hover:text-white/45 transition-colors cursor-pointer select-none">
-            <span className="chevron text-[8px]">▶</span>
-            Config
-          </summary>
-          <div className="mt-2 space-y-1.5 pl-3 border-l border-white/[0.06]">
-            <div className="stat-row"><span className="stat-label">Min edge</span><span className="stat-value text-xs">5%</span></div>
-            <div className="stat-row"><span className="stat-label">Min net profit</span><span className="stat-value text-xs">$0.05</span></div>
-            <div className="stat-row"><span className="stat-label">Sports</span><span className="stat-value text-xs">NBA · Soccer</span></div>
-            <div className="stat-row"><span className="stat-label">Scan interval</span><span className="stat-value text-xs">5 min</span></div>
-            <div className="stat-row"><span className="stat-label">Lookahead</span><span className="stat-value text-xs">3 days</span></div>
-            <p className="text-[9px] text-white/15 mt-1.5 italic">hardcoded in service — not adjustable from dashboard</p>
+        {/* Right: signals list + config */}
+        <div className="flex flex-col gap-4">
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <p className="font-jb text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Signals</p>
+              <p className="font-jb text-[9px]" style={{ color: 'var(--text-muted)' }}>{sbArb?.recentSignals?.length ?? 0}</p>
+            </div>
+            <div className="space-y-1 max-h-28 overflow-y-auto">
+              {(sbArb?.recentSignals ?? []).length === 0 ? (
+                <p className="font-jb text-[10px] text-center py-2" style={{ color: 'var(--text-muted)' }}>Waiting for signals…</p>
+              ) : (
+                (sbArb?.recentSignals ?? []).slice(0, 5).map((sig: SportsbookArbDashboardSignal, i: number) => (
+                  <div key={`${sig.timestamp}-${i}`} className="flex items-center justify-between gap-2">
+                    <span className="font-inter text-[10px] truncate flex-1" style={{ color: 'var(--text-muted)' }}>
+                      {sig.participant1Name} vs {sig.participant2Name}
+                    </span>
+                    <span className="font-jb text-[9px] shrink-0" style={{ color: 'var(--directional)' }}>
+                      {(sig.edge * 100).toFixed(1)}pp
+                    </span>
+                    <span className="font-jb text-[9px] shrink-0" style={{ color: 'var(--profit)' }}>
+                      ${sig.expectedNetProfitUSD.toFixed(2)}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
-        </details>
+
+          <details className="s-config">
+            <summary className="flex items-center gap-1.5">
+              <span className="s-chevron font-jb text-[8px]" style={{ color: 'var(--text-muted)' }}>▶</span>
+              <span className="font-jb text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Config</span>
+            </summary>
+            <div className="mt-2 pl-3 space-y-1.5" style={{ borderLeft: '1px solid var(--border)' }}>
+              <div className="s-stat-row"><span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>Min edge</span><span className="font-jb text-[10px]" style={{ color: 'var(--text-secondary)' }}>5%</span></div>
+              <div className="s-stat-row"><span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>Min profit</span><span className="font-jb text-[10px]" style={{ color: 'var(--text-secondary)' }}>$0.05</span></div>
+              <div className="s-stat-row"><span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>Sports</span><span className="font-jb text-[10px]" style={{ color: 'var(--text-secondary)' }}>NBA · Soccer</span></div>
+              <div className="s-stat-row"><span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>Scan interval</span><span className="font-jb text-[10px]" style={{ color: 'var(--text-secondary)' }}>5 min</span></div>
+              <p className="font-jb text-[9px] mt-1 italic" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>hardcoded — not adjustable from dashboard</p>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
   );
