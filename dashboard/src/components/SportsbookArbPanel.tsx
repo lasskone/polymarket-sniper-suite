@@ -20,6 +20,9 @@ export function SportsbookArbPanel({ state }: SportsbookArbPanelProps) {
           <h2 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
             Sportsbook Arb
           </h2>
+          <p className="font-inter text-[10px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+            De-vigs Pinnacle's sharp odds to a fair probability, then signals when Polymarket's price is materially below that fair value — an edge, not a lock.
+          </p>
         </div>
         {isLive ? (
           <span

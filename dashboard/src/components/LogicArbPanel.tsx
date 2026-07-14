@@ -1,10 +1,12 @@
 import type { BotState, LogicArbDashboardSignal } from '../types';
+import type { ModuleStat } from '../hooks/usePaperStats';
 
 interface LogicArbPanelProps {
   state: BotState | null;
+  paperStats?: ModuleStat;
 }
 
-export function LogicArbPanel({ state }: LogicArbPanelProps) {
+export function LogicArbPanel({ state, paperStats }: LogicArbPanelProps) {
   const d = state?.logicArb;
   const isLive = d?.status === 'scanning';
 
@@ -22,6 +24,9 @@ export function LogicArbPanel({ state }: LogicArbPanelProps) {
           <h2 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
             Logic Arb
           </h2>
+          <p className="font-inter text-[10px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+            If A implies B logically, P(A) can't exceed P(B). Detects correlated market pairs where that constraint is violated and prices the gap as a guaranteed profit.
+          </p>
         </div>
         {isLive ? (
           <span
@@ -109,6 +114,20 @@ export function LogicArbPanel({ state }: LogicArbPanelProps) {
               ))
             )}
           </div>
+        </div>
+
+        {/* Performance */}
+        <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(91,155,208,0.05)', border: '1px solid rgba(91,155,208,0.12)' }}>
+          <div className="flex items-center justify-between mb-1.5">
+            <p className="font-jb text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Performance (simulated)</p>
+            <p className="font-jb text-[9px]" style={{ color: 'var(--text-muted)' }}>{paperStats?.tradeCount ?? 0} trades</p>
+          </div>
+          <p className="font-jb text-sm font-semibold" style={{ color: (paperStats?.totalNetProfitUsd ?? 0) >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+            {(paperStats?.totalNetProfitUsd ?? 0) >= 0 ? '+' : ''}${(paperStats?.totalNetProfitUsd ?? 0).toFixed(4)}
+          </p>
+          <p className="font-inter text-[9px] mt-0.5" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+            Simulated — no real money moved
+          </p>
         </div>
 
         {/* Config */}

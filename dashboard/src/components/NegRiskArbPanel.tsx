@@ -1,10 +1,12 @@
 import type { BotState, NegRiskArbSignal } from '../types';
+import type { ModuleStat } from '../hooks/usePaperStats';
 
 interface NegRiskArbPanelProps {
   state: BotState | null;
+  paperStats?: ModuleStat;
 }
 
-export function NegRiskArbPanel({ state }: NegRiskArbPanelProps) {
+export function NegRiskArbPanel({ state, paperStats }: NegRiskArbPanelProps) {
   const d = state?.negRiskArb;
   const isLive = d?.status === 'scanning';
 
@@ -19,6 +21,9 @@ export function NegRiskArbPanel({ state }: NegRiskArbPanelProps) {
           <h2 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
             NegRisk Arb
           </h2>
+          <p className="font-inter text-[10px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+            In a multi-outcome event exactly one outcome pays $1, so YES prices must sum to 1.00. Detects when that sum deviates and buys the mispriced side — guaranteed profit at resolution.
+          </p>
         </div>
         {isLive ? (
           <span
@@ -98,6 +103,20 @@ export function NegRiskArbPanel({ state }: NegRiskArbPanelProps) {
               ))
             )}
           </div>
+        </div>
+
+        {/* Performance */}
+        <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(91,155,208,0.05)', border: '1px solid rgba(91,155,208,0.12)' }}>
+          <div className="flex items-center justify-between mb-1.5">
+            <p className="font-jb text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Performance (simulated)</p>
+            <p className="font-jb text-[9px]" style={{ color: 'var(--text-muted)' }}>{paperStats?.tradeCount ?? 0} trades</p>
+          </div>
+          <p className="font-jb text-sm font-semibold" style={{ color: (paperStats?.totalNetProfitUsd ?? 0) >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+            {(paperStats?.totalNetProfitUsd ?? 0) >= 0 ? '+' : ''}${(paperStats?.totalNetProfitUsd ?? 0).toFixed(4)}
+          </p>
+          <p className="font-inter text-[9px] mt-0.5" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+            Simulated — no real money moved
+          </p>
         </div>
 
         {/* Config */}

@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
+import { usePaperStats } from './hooks/usePaperStats';
 import {
   Sidebar,
   ConnectionStatus,
@@ -33,6 +34,13 @@ function App() {
   const [activeNav, setActiveNav]     = useState('command-center');
   const { state, config, logs, connected, error, sendCommand } = useWebSocket();
   const isDryRun = config?.dryRun ?? true;
+
+  // Refresh paper stats whenever new SIGNAL log entries arrive.
+  const signalCount = useMemo(
+    () => logs.filter((l) => l.level === 'SIGNAL').length,
+    [logs],
+  );
+  const paperStats = usePaperStats(signalCount);
 
   const handleClosePosition = (tokenId: string, size: number) => {
     sendCommand('closePosition', { tokenId, size });
@@ -130,9 +138,9 @@ function App() {
           <section>
             <SectionLabel label="Risk-free arbitrage" color="var(--riskfree)" />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <DipArbPanel state={state} config={config} />
-              <NegRiskArbPanel state={state} />
-              <LogicArbPanel state={state} />
+              <DipArbPanel state={state} config={config} paperStats={paperStats.byModule['dip-arb']} />
+              <NegRiskArbPanel state={state} paperStats={paperStats.byModule['negrisk-arb']} />
+              <LogicArbPanel state={state} paperStats={paperStats.byModule['logic-arb']} />
             </div>
           </section>
 

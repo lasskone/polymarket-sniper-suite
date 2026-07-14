@@ -43,7 +43,9 @@ import { PolymarketSDK }             from '../src/index.js';
 import type { DipArbUnderlying, DipArbSignal } from '../src/services/dip-arb-types.js';
 import {
   isDipArbLeg1Signal,
+  isDipArbLeg2Signal,
   resolveEffectiveSumTarget,
+  netProfitAfterFees as dipArbNetProfitAfterFees,
 }                                    from '../src/services/dip-arb-types.js';
 import { NegRiskArbService }         from '../src/services/negrisk-arb-service.js';
 import { LogicArbService }           from '../src/services/logic-arb-service.js';
@@ -337,6 +339,30 @@ async function main(): Promise<void> {
             `DipArb ${signal.type}: ${side} @ ${signal.currentPrice.toFixed(3)}`,
           );
 
+          // Record leg2 as a paper trade — leg2 represents the complete two-leg position.
+          // leg1 alone is not a complete trade, so we skip it here.
+          if (isDipArbLeg2Signal(signal)) {
+            const netProfit = dipArbNetProfitAfterFees(
+              signal.leg1.price,
+              signal.currentPrice,
+              signal.shares,
+            );
+            const label = `${signal.leg1.side}/${signal.hedgeSide} round ${signal.roundId}`;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (supabase as any).from('paper_trades').insert({
+              module:         'dip-arb',
+              market_label:  label,
+              net_profit_usd: netProfit,
+              shares:         signal.shares,
+              metadata:       signal as unknown as Record<string, unknown>,
+              trading_mode:   cfg.tradingMode,
+            }).then(({ error }: { error: { message: string } | null }) => {
+              if (error) {
+                dashboardEmitter.log('WARN', `DipArb paper trade insert failed: ${error.message}`);
+              }
+            });
+          }
+
           // Paper mode: log only, no execution.
           if (cfg.tradingMode !== 'live') return;
 
@@ -490,6 +516,7 @@ async function main(): Promise<void> {
           direction: string;
           yesSum: number;
           netProfitUSD: number;
+          shares: number;
           outcomeCount: number;
           deviation: number;
         }) => {
@@ -500,6 +527,22 @@ async function main(): Promise<void> {
             `dev=${signal.deviation.toFixed(4)}, net $${signal.netProfitUSD.toFixed(4)}] ` +
             `(paper mode — detection only)`,
           );
+
+          // Record as paper trade (detection-only; always logged regardless of tradingMode).
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (supabase as any).from('paper_trades').insert({
+            module:         'negrisk-arb',
+            market_label:  signal.eventTitle,
+            net_profit_usd: signal.netProfitUSD,
+            shares:         signal.shares,
+            metadata:       signal as unknown as Record<string, unknown>,
+            trading_mode:   cfg.tradingMode,
+          }).then(({ error }: { error: { message: string } | null }) => {
+            if (error) {
+              dashboardEmitter.log('WARN', `NegRiskArb paper trade insert failed: ${error.message}`);
+            }
+          });
+
           const cur = dashboardEmitter.getState();
           if (cur) {
             const newSignal = { ...signal, timestamp: new Date().toISOString() };
@@ -598,6 +641,23 @@ async function main(): Promise<void> {
             `${signal.trade.legB.token}-B @ ${signal.trade.legB.price.toFixed(4)} ` +
             `(detection only)`,
           );
+
+          // Record as paper trade (detection-only; always logged regardless of tradingMode).
+          const label = `${signal.marketASlug} / ${signal.marketBSlug}`;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (supabase as any).from('paper_trades').insert({
+            module:         'logic-arb',
+            market_label:  label,
+            net_profit_usd: signal.netProfitUSD,
+            shares:         signal.shares,
+            metadata:       signal as unknown as Record<string, unknown>,
+            trading_mode:   cfg.tradingMode,
+          }).then(({ error }: { error: { message: string } | null }) => {
+            if (error) {
+              dashboardEmitter.log('WARN', `LogicArb paper trade insert failed: ${error.message}`);
+            }
+          });
+
           const cur = dashboardEmitter.getState();
           if (cur) {
             const newSignal = {

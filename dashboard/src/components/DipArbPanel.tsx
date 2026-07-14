@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
 import type { BotState, BotConfig, DipArbSignal } from '../types';
+import type { ModuleStat } from '../hooks/usePaperStats';
 import { Sparkline } from './Sparkline';
 
 interface DipArbPanelProps {
   state: BotState | null;
   config?: BotConfig | null;
+  paperStats?: ModuleStat;
 }
 
 const MAX_PRICE_HISTORY = 30;
 
-export function DipArbPanel({ state, config }: DipArbPanelProps) {
+export function DipArbPanel({ state, config, paperStats }: DipArbPanelProps) {
   const [timeRemaining, setTimeRemaining] = useState<string>('--:--');
   const [progress, setProgress] = useState(0);
   const [upPriceHistory, setUpPriceHistory] = useState<number[]>([]);
@@ -75,6 +77,9 @@ export function DipArbPanel({ state, config }: DipArbPanelProps) {
           <h2 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
             DipArb Monitor
           </h2>
+          <p className="font-inter text-[10px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+            Buys both sides of a 5–15 min BTC/ETH/SOL market when their combined price dips below $1 — guaranteed profit at resolution.
+          </p>
         </div>
         {isActive ? (
           <span
@@ -187,6 +192,20 @@ export function DipArbPanel({ state, config }: DipArbPanelProps) {
               ))
             )}
           </div>
+        </div>
+
+        {/* Performance */}
+        <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(91,155,208,0.05)', border: '1px solid rgba(91,155,208,0.12)' }}>
+          <div className="flex items-center justify-between mb-1.5">
+            <p className="font-jb text-[9px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Performance (simulated)</p>
+            <p className="font-jb text-[9px]" style={{ color: 'var(--text-muted)' }}>{paperStats?.tradeCount ?? 0} trades</p>
+          </div>
+          <p className="font-jb text-sm font-semibold" style={{ color: (paperStats?.totalNetProfitUsd ?? 0) >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+            {(paperStats?.totalNetProfitUsd ?? 0) >= 0 ? '+' : ''}${(paperStats?.totalNetProfitUsd ?? 0).toFixed(4)}
+          </p>
+          <p className="font-inter text-[9px] mt-0.5" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+            Simulated — no real money moved
+          </p>
         </div>
 
         {/* Config */}

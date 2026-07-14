@@ -14,11 +14,75 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { dashboardEmitter } from './state-emitter.js';
 import type { WebSocketMessage } from './types.js';
 import { loadHistory, getSession, getHistorySummary } from './session-history.js';
+import { getSupabaseClient } from '../../modules/shared/supabase-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let server: http.Server | null = null;
 let wss: WebSocketServer | null = null;
+
+// ---------------------------------------------------------------------------
+// Paper stats helper types
+// ---------------------------------------------------------------------------
+
+interface ModuleStat {
+  tradeCount: number;
+  totalNetProfitUsd: number;
+  avgProfitPerTrade: number;
+  lastTradeAt: string | null;
+}
+
+function emptyModuleStat(): ModuleStat {
+  return { tradeCount: 0, totalNetProfitUsd: 0, avgProfitPerTrade: 0, lastTradeAt: null };
+}
+
+function emptyPaperStats() {
+  return { byModule: {} as Record<string, ModuleStat>, total: emptyModuleStat() };
+}
+
+async function queryPaperStats() {
+  try {
+    const db = getSupabaseClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (db as any)
+      .from('paper_trades')
+      .select('module, net_profit_usd, opened_at');
+
+    if (error || !data || !Array.isArray(data)) return emptyPaperStats();
+
+    const byModule: Record<string, ModuleStat> = {};
+    const total = emptyModuleStat();
+
+    for (const row of data as Array<{ module: string; net_profit_usd: string | number; opened_at: string }>) {
+      const m = row.module;
+      if (!byModule[m]) byModule[m] = emptyModuleStat();
+      const profit = Number(row.net_profit_usd);
+      byModule[m].tradeCount++;
+      byModule[m].totalNetProfitUsd += profit;
+      if (!byModule[m].lastTradeAt || row.opened_at > byModule[m].lastTradeAt!) {
+        byModule[m].lastTradeAt = row.opened_at;
+      }
+      total.tradeCount++;
+      total.totalNetProfitUsd += profit;
+      if (!total.lastTradeAt || row.opened_at > total.lastTradeAt) {
+        total.lastTradeAt = row.opened_at;
+      }
+    }
+
+    for (const m of Object.keys(byModule)) {
+      byModule[m].avgProfitPerTrade = byModule[m].tradeCount > 0
+        ? byModule[m].totalNetProfitUsd / byModule[m].tradeCount
+        : 0;
+    }
+    total.avgProfitPerTrade = total.tradeCount > 0
+      ? total.totalNetProfitUsd / total.tradeCount
+      : 0;
+
+    return { byModule, total };
+  } catch {
+    return emptyPaperStats();
+  }
+}
 
 function broadcast(message: WebSocketMessage): void {
   if (!wss) return;
@@ -31,7 +95,7 @@ function broadcast(message: WebSocketMessage): void {
 }
 
 export function startDashboard(port = 3001): http.Server {
-  server = http.createServer((req, res) => {
+  server = http.createServer(async (req, res) => {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -92,6 +156,13 @@ export function startDashboard(port = 3001): http.Server {
     if (url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', uptime: process.uptime() }));
+      return;
+    }
+
+    if (url.pathname === '/api/paper-stats') {
+      const stats = await queryPaperStats();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(stats));
       return;
     }
 
