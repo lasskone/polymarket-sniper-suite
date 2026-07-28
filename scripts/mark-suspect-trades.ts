@@ -51,34 +51,46 @@ async function main(): Promise<void> {
   console.log(`\nmark-suspect-trades — window: ${WINDOW_START} → ${WINDOW_END}`);
   if (DRY_RUN) console.log('DRY RUN — no rows will be updated\n');
 
-  // Fetch all logic-arb rows in the burst window (no Supabase row limit; use range paging
-  // just in case, but 1000 rows in this window is the expected maximum).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data: rows, error } = await (db as any)
-    .from('paper_trades')
-    .select('id, module, market_label, net_profit_usd, opened_at, suspect_duplicate')
-    .eq('module', 'logic-arb')
-    .gte('opened_at', WINDOW_START)
-    .lt('opened_at', WINDOW_END)
-    .order('opened_at', { ascending: true });
+  // Fetch all logic-arb rows in the burst window using pagination to work around
+  // the Supabase REST default 1000-row cap.
+  const PAGE = 1000;
+  const allRows: PaperTradeRow[] = [];
+  let from = 0;
 
-  if (error) {
-    const msg = (error as { message?: string }).message ?? String(error);
-    if (msg.includes('suspect_duplicate') || msg.includes('column')) {
-      console.error('\nERROR: suspect_duplicate column not found.');
-      console.error('Apply supabase/migrations/20260728000000_paper_trades_dedup.sql first.');
-    } else {
-      console.error('\nERROR fetching rows:', msg);
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: page, error } = await (db as any)
+      .from('paper_trades')
+      .select('id, module, market_label, net_profit_usd, opened_at, suspect_duplicate')
+      .eq('module', 'logic-arb')
+      .gte('opened_at', WINDOW_START)
+      .lt('opened_at', WINDOW_END)
+      .order('opened_at', { ascending: true })
+      .range(from, from + PAGE - 1);
+
+    if (error) {
+      const msg = (error as { message?: string }).message ?? String(error);
+      if (msg.includes('suspect_duplicate') || msg.includes('column')) {
+        console.error('\nERROR: suspect_duplicate column not found.');
+        console.error('Apply supabase/migrations/20260728000000_paper_trades_dedup.sql first.');
+      } else {
+        console.error('\nERROR fetching rows:', msg);
+      }
+      process.exit(1);
     }
-    process.exit(1);
+
+    if (!page || !Array.isArray(page) || page.length === 0) break;
+    allRows.push(...(page as PaperTradeRow[]));
+    console.log(`  Fetched ${allRows.length} rows so far…`);
+    if (page.length < PAGE) break;  // last page
+    from += PAGE;
   }
 
-  if (!rows || !Array.isArray(rows) || rows.length === 0) {
+  if (allRows.length === 0) {
     console.log('No logic-arb rows found in the burst window. Nothing to mark.');
     return;
   }
-
-  const allRows = rows as PaperTradeRow[];
   const totalRaw = allRows.length;
 
   // ── Identify duplicates ───────────────────────────────────────────────────
