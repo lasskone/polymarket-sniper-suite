@@ -52,7 +52,7 @@ import { LogicArbService }           from '../src/services/logic-arb-service.js'
 import type { LogicArbSignal }       from '../src/services/logic-arb-types.js';
 import { computeShares }             from '../src/services/dip-arb-sizing.js';
 import { SportsbookArbService }      from '../src/services/sportsbook-arb-service.js';
-import type { SportsbookArbSignal }  from '../src/services/sportsbook-arb-types.js';
+import type { SportsbookArbSignal, SportsbookArbScanResult } from '../src/services/sportsbook-arb-types.js';
 import { runPaperTradeResolver }     from '../src/services/paper-trade-resolver.js';
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,15 @@ startDashboard(PORT);
 // ---------------------------------------------------------------------------
 
 const log = createLogger('main');
+
+// Latest OddsPapi request stats from the sportsbook-arb module — updated on each
+// 'scanned' event and included in the heartbeat log.
+let sbArbRequestStats: {
+	today: number;
+	month: number;
+	quota: number;
+	nearCeiling: boolean;
+} | null = null;
 
 // ---------------------------------------------------------------------------
 // Shutdown coordination
@@ -164,6 +173,15 @@ function startStatusReporter(activeModules: string[]): NodeJS.Timeout {
         rss:      (mem.rss / 1_048_576).toFixed(1),
         heapUsed: (mem.heapUsed / 1_048_576).toFixed(1),
       },
+      ...(sbArbRequestStats != null && {
+        oddspapi: {
+          requestsToday:     sbArbRequestStats.today,
+          requestsThisMonth: sbArbRequestStats.month,
+          monthlyQuota:      sbArbRequestStats.quota,
+          pctUsed:           ((sbArbRequestStats.month / sbArbRequestStats.quota) * 100).toFixed(1) + '%',
+          nearCeiling:       sbArbRequestStats.nearCeiling,
+        },
+      }),
     });
   }, INTERVAL_MS);
 }
@@ -331,6 +349,11 @@ async function main(): Promise<void> {
         // calls executeLeg1/2 — before our async listener can complete a risk check.
         // With autoExecute: false the service stops after emitting the signal, giving this
         // handler full control over whether and when execution happens.
+        //
+        // In-process dedup: tracks which roundIds have already been recorded as paper trades
+        // this run.  Belt-and-suspenders against any restart that might re-emit a round.
+        const dipArbInsertedRounds = new Set<string>();
+
         sdk.dipArb.on('signal', async (signal: DipArbSignal) => {
           const side: string = isDipArbLeg1Signal(signal)
             ? signal.dipSide
@@ -349,19 +372,24 @@ async function main(): Promise<void> {
               signal.shares,
             );
             const label = `${signal.leg1.side}/${signal.hedgeSide} round ${signal.roundId}`;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (supabase as any).from('paper_trades').insert({
-              module:         'dip-arb',
-              market_label:  label,
-              net_profit_usd: netProfit,
-              shares:         signal.shares,
-              metadata:       signal as unknown as Record<string, unknown>,
-              trading_mode:   cfg.tradingMode,
-            }).then(({ error }: { error: { message: string } | null }) => {
-              if (error) {
-                dashboardEmitter.log('WARN', `DipArb paper trade insert failed: ${error.message}`);
-              }
-            });
+            // In-process guard: each roundId is emitted exactly once per run, but a
+            // hard restart could re-emit the same roundId if the leg2 event replays.
+            if (!dipArbInsertedRounds.has(signal.roundId)) {
+              dipArbInsertedRounds.add(signal.roundId);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (supabase as any).from('paper_trades').upsert({
+                module:         'dip-arb',
+                market_label:  label,
+                net_profit_usd: netProfit,
+                shares:         signal.shares,
+                metadata:       signal as unknown as Record<string, unknown>,
+                trading_mode:   cfg.tradingMode,
+              }, { onConflict: 'module,market_label,opened_minute', ignoreDuplicates: true }).then(({ error }: { error: { message: string } | null }) => {
+                if (error) {
+                  dashboardEmitter.log('WARN', `DipArb paper trade insert failed: ${error.message}`);
+                }
+              });
+            }
           }
 
           // Paper mode: log only, no execution.
@@ -530,15 +558,17 @@ async function main(): Promise<void> {
           );
 
           // Record as paper trade (detection-only; always logged regardless of tradingMode).
+          // upsert with ignoreDuplicates silently skips duplicate rows that match the
+          // (module, market_label, date_trunc('minute', opened_at)) unique index.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (supabase as any).from('paper_trades').insert({
+          (supabase as any).from('paper_trades').upsert({
             module:         'negrisk-arb',
             market_label:  signal.eventTitle,
             net_profit_usd: signal.netProfitUSD,
             shares:         signal.shares,
             metadata:       signal as unknown as Record<string, unknown>,
             trading_mode:   cfg.tradingMode,
-          }).then(({ error }: { error: { message: string } | null }) => {
+          }, { onConflict: 'module,market_label,opened_minute', ignoreDuplicates: true }).then(({ error }: { error: { message: string } | null }) => {
             if (error) {
               dashboardEmitter.log('WARN', `NegRiskArb paper trade insert failed: ${error.message}`);
             }
@@ -644,16 +674,18 @@ async function main(): Promise<void> {
           );
 
           // Record as paper trade (detection-only; always logged regardless of tradingMode).
+          // upsert with ignoreDuplicates silently skips duplicate rows that match the
+          // (module, market_label, date_trunc('minute', opened_at)) unique index.
           const label = `${signal.marketASlug} / ${signal.marketBSlug}`;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (supabase as any).from('paper_trades').insert({
+          (supabase as any).from('paper_trades').upsert({
             module:         'logic-arb',
             market_label:  label,
             net_profit_usd: signal.netProfitUSD,
             shares:         signal.shares,
             metadata:       signal as unknown as Record<string, unknown>,
             trading_mode:   cfg.tradingMode,
-          }).then(({ error }: { error: { message: string } | null }) => {
+          }, { onConflict: 'module,market_label,opened_minute', ignoreDuplicates: true }).then(({ error }: { error: { message: string } | null }) => {
             if (error) {
               dashboardEmitter.log('WARN', `LogicArb paper trade insert failed: ${error.message}`);
             }
@@ -738,15 +770,18 @@ async function main(): Promise<void> {
         const sbArb = new SportsbookArbService(cfg.oddspapiKey);
         sbArb.updateConfig({
           // Soccer only for now — NBA removed pending NBA Betfair Exchange coverage check.
-          sportIds:        [10],
-          lookaheadDays:   3,
-          // 1-minute scan interval covers live matches (Polymarket closes ~15 min post-kickoff).
-          // Pre-game fixtures are re-scanned every minute too; the Gamma cache (5 min TTL)
-          // means the Gamma API itself is called far less frequently than once per minute.
-          scanIntervalMs:  60_000,
-          minEdge:         0.05,
-          minNetProfitUSD: 0.05,
-          shares:          10,
+          sportIds:                 [10],
+          lookaheadDays:            3,
+          liveStatusIds:            [2, 3, 4, 5, 6],
+          fixtureRefreshIntervalMs: 3 * 60 * 60 * 1000,
+          liveOddsIntervalMs:       60_000,
+          pregameOddsIntervalMs:    30 * 60_000,
+          pregameWindowMs:          24 * 60 * 60 * 1000,
+          monthlyQuota:             parseInt(process.env.ODDSPAPI_MONTHLY_QUOTA ?? '3000', 10),
+          quotaWarningThreshold:    0.9,
+          minEdge:                  0.05,
+          minNetProfitUSD:          0.05,
+          shares:                   10,
         });
 
         sbArb.on('started', () => {
@@ -758,11 +793,19 @@ async function main(): Promise<void> {
           });
         });
 
-        sbArb.on('scanned', (result: { fixturesTotal: number; fixturesMatchedToPolymarket: number }) => {
+        sbArb.on('scanned', (result: SportsbookArbScanResult) => {
+          sbArbRequestStats = {
+            today:       result.requestsToday,
+            month:       result.requestsThisMonth,
+            quota:       result.monthlyQuota,
+            nearCeiling: result.quotaNearCeiling,
+          };
           dashboardEmitter.log(
             'INFO',
-            `SportsbookArb scanned ${result.fixturesTotal} Betfair fixtures, ` +
-            `${result.fixturesMatchedToPolymarket} matched to Polymarket (Gamma)`,
+            `SportsbookArb: ${result.fixturesLive} live / ${result.fixturesPregame} pregame in odds window ` +
+            `| Polymarket matches: ${result.fixturesMatchedToPolymarket} ` +
+            `| OddsPapi: ${result.requestsToday} today / ${result.requestsThisMonth} this month` +
+            (result.quotaNearCeiling ? ' ⚠ NEAR QUOTA CEILING' : ''),
           );
           const cur = dashboardEmitter.getState();
           if (cur) {

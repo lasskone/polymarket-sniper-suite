@@ -90,6 +90,9 @@ async function defaultFetchFeeBps(conditionId: string): Promise<number | null> {
 
 // ============= Service Config Defaults =============
 
+/** Default signal cooldown: 30 minutes. */
+const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
+
 const DEFAULT_CONFIG: NegRiskArbConfig = {
   shares:          10,
   minNetProfitUSD: 0.05,
@@ -97,6 +100,7 @@ const DEFAULT_CONFIG: NegRiskArbConfig = {
   minOutcomes:     3,
   maxOutcomes:     25,
   feeRate:         NEGRISK_FEE_RATE,
+  cooldownMs:      DEFAULT_COOLDOWN_MS,
 };
 
 // ============= Service =============
@@ -114,6 +118,13 @@ export class NegRiskArbService extends EventEmitter {
 
   /** In-memory fee cache: conditionId → { bps, expiresAt } */
   private feeCache = new Map<string, FeeCacheEntry>();
+
+  /**
+   * Signal cooldown tracker: eventId → timestamp of last emitted signal.
+   * Prevents the same NegRisk event from flooding paper_trades on every scan
+   * cycle while the deviation persists.
+   */
+  private signalCooldown = new Map<string, number>();
 
   /** Structured JSON log — visible in Railway log stream without a WebSocket client. */
   private slog(level: string, message: string, data?: Record<string, unknown>): void {
@@ -179,6 +190,7 @@ export class NegRiskArbService extends EventEmitter {
       this.timer = null;
     }
     this.feeCache.clear();
+    this.signalCooldown.clear();
     this.slog('INFO', 'NegRiskArb scanner stopped');
     this.emit('stopped');
   }
@@ -287,19 +299,27 @@ export class NegRiskArbService extends EventEmitter {
       if (yesSum < 1) {
         const net = netProfitLongArb(yesPrices, this.cfg.shares, feeRate);
         if (net >= this.cfg.minNetProfitUSD) {
-          const signal: NegRiskArbSignal = {
-            eventId:      event.id,
-            eventTitle:   event.title,
-            direction:    'long',
-            yesSum,
-            deviation:    1 - yesSum,
-            netProfitUSD: net,
-            shares:       this.cfg.shares,
-            outcomeCount: validMarkets.length,
-            marketIds:    validMarkets.map(m => m.conditionId),
-          };
-          this.slog('SIGNAL', `NegRiskArb LONG "${event.title}" Σ=${yesSum.toFixed(4)} dev=${(1-yesSum).toFixed(4)} net=$${net.toFixed(4)}`);
-          this.emit('signal', signal);
+          const cooldownKey = `${event.id}:long`;
+          const lastSignaledAt = this.signalCooldown.get(cooldownKey) ?? 0;
+          const now = Date.now();
+          if (now - lastSignaledAt >= this.cfg.cooldownMs) {
+            const signal: NegRiskArbSignal = {
+              eventId:      event.id,
+              eventTitle:   event.title,
+              direction:    'long',
+              yesSum,
+              deviation:    1 - yesSum,
+              netProfitUSD: net,
+              shares:       this.cfg.shares,
+              outcomeCount: validMarkets.length,
+              marketIds:    validMarkets.map(m => m.conditionId),
+            };
+            this.signalCooldown.set(cooldownKey, now);
+            this.slog('SIGNAL', `NegRiskArb LONG "${event.title}" Σ=${yesSum.toFixed(4)} dev=${(1-yesSum).toFixed(4)} net=$${net.toFixed(4)}`);
+            this.emit('signal', signal);
+          } else {
+            this.slog('DEBUG', `NegRiskArb LONG "${event.title}" suppressed — cooldown active (${Math.round((this.cfg.cooldownMs - (now - lastSignaledAt)) / 60_000)}m remaining)`);
+          }
         }
       }
 
@@ -307,19 +327,27 @@ export class NegRiskArbService extends EventEmitter {
       if (yesSum > 1) {
         const net = netProfitShortArb(yesPrices, this.cfg.shares, feeRate);
         if (net >= this.cfg.minNetProfitUSD) {
-          const signal: NegRiskArbSignal = {
-            eventId:      event.id,
-            eventTitle:   event.title,
-            direction:    'short',
-            yesSum,
-            deviation:    yesSum - 1,
-            netProfitUSD: net,
-            shares:       this.cfg.shares,
-            outcomeCount: validMarkets.length,
-            marketIds:    validMarkets.map(m => m.conditionId),
-          };
-          this.slog('SIGNAL', `NegRiskArb SHORT "${event.title}" Σ=${yesSum.toFixed(4)} dev=${(yesSum-1).toFixed(4)} net=$${net.toFixed(4)}`);
-          this.emit('signal', signal);
+          const cooldownKey = `${event.id}:short`;
+          const lastSignaledAt = this.signalCooldown.get(cooldownKey) ?? 0;
+          const now = Date.now();
+          if (now - lastSignaledAt >= this.cfg.cooldownMs) {
+            const signal: NegRiskArbSignal = {
+              eventId:      event.id,
+              eventTitle:   event.title,
+              direction:    'short',
+              yesSum,
+              deviation:    yesSum - 1,
+              netProfitUSD: net,
+              shares:       this.cfg.shares,
+              outcomeCount: validMarkets.length,
+              marketIds:    validMarkets.map(m => m.conditionId),
+            };
+            this.signalCooldown.set(cooldownKey, now);
+            this.slog('SIGNAL', `NegRiskArb SHORT "${event.title}" Σ=${yesSum.toFixed(4)} dev=${(yesSum-1).toFixed(4)} net=$${net.toFixed(4)}`);
+            this.emit('signal', signal);
+          } else {
+            this.slog('DEBUG', `NegRiskArb SHORT "${event.title}" suppressed — cooldown active (${Math.round((this.cfg.cooldownMs - (now - lastSignaledAt)) / 60_000)}m remaining)`);
+          }
         }
       }
     }

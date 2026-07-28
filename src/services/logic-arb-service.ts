@@ -82,11 +82,22 @@ async function defaultFetchFeeBps(conditionId: string): Promise<number | null> {
 
 // ============= Service Config Defaults =============
 
+/** Default signal cooldown: 30 minutes. */
+const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * Number of consecutive scan cycles in which a market returns null before the
+ * pair is auto-deactivated.  5 cycles × 60 s/cycle = 5 minutes of null data.
+ */
+const DEFAULT_DEAD_PAIR_NULL_THRESHOLD = 5;
+
 const DEFAULT_CONFIG: LogicArbConfig = {
-  shares:          10,
-  minNetProfitUSD: 0.05,
-  scanIntervalMs:  60_000,
-  feeRate:         LOGIC_ARB_FEE_RATE,
+  shares:               10,
+  minNetProfitUSD:      0.05,
+  scanIntervalMs:       60_000,
+  feeRate:              LOGIC_ARB_FEE_RATE,
+  cooldownMs:           DEFAULT_COOLDOWN_MS,
+  deadPairNullThreshold: DEFAULT_DEAD_PAIR_NULL_THRESHOLD,
 };
 
 // ============= Service =============
@@ -108,6 +119,20 @@ export class LogicArbService extends EventEmitter {
 
   /** In-memory fee cache: conditionId → { bps, expiresAt } */
   private feeCache = new Map<string, FeeCacheEntry>();
+
+  /**
+   * Signal cooldown tracker: pairId → timestamp of last emitted signal.
+   * Prevents the same still-valid opportunity from flooding paper_trades on
+   * every 60-second scan cycle.
+   */
+  private signalCooldown = new Map<string, number>();
+
+  /**
+   * Consecutive-null counter: pairId → number of consecutive scan cycles in
+   * which getMarketByConditionId() returned null for at least one side.
+   * Reset to 0 when both markets return valid data. Used for dead-pair detection.
+   */
+  private consecutiveNullCount = new Map<string, number>();
 
   /** Structured JSON log — visible in Railway log stream without a WebSocket client. */
   private slog(level: string, message: string, data?: Record<string, unknown>): void {
@@ -173,6 +198,8 @@ export class LogicArbService extends EventEmitter {
       this.timer = null;
     }
     this.feeCache.clear();
+    this.signalCooldown.clear();
+    this.consecutiveNullCount.clear();
     this.slog('INFO', 'LogicArb scanner stopped');
     this.emit('stopped');
   }
@@ -275,8 +302,42 @@ export class LogicArbService extends EventEmitter {
         this.gammaApi.getMarketByConditionId(pair.market_b_condition_id),
       ]);
 
-      // Skip if either market is unavailable or has no valid price.
-      if (!marketA || !marketB) continue;
+      // ── Dead-pair detection ────────────────────────────────────────────────
+      // If either market is null (delisted / resolved), increment the
+      // consecutive-null counter.  After deadPairNullThreshold consecutive
+      // null cycles, mark the pair inactive in the DB so it stops being loaded.
+      if (!marketA || !marketB) {
+        const nullCount = (this.consecutiveNullCount.get(pair.id) ?? 0) + 1;
+        this.consecutiveNullCount.set(pair.id, nullCount);
+
+        if (nullCount >= this.cfg.deadPairNullThreshold) {
+          this.slog('WARN', `LogicArb dead-pair detected — deactivating "${pair.market_a_slug}" / "${pair.market_b_slug}"`, {
+            pairId:    pair.id,
+            nullCount,
+            missingA:  !marketA,
+            missingB:  !marketB,
+          });
+          // Update the DB row so it is excluded from future scans.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const { error: updateError } = await (this.supabase as any)
+            .from('correlated_market_pairs')
+            .update({ active: false })
+            .eq('id', pair.id);
+          if (updateError) {
+            this.slog('WARN', `LogicArb dead-pair update failed for ${pair.id}: ${updateError.message}`);
+          } else {
+            // Remove from in-memory trackers — pair won't appear in future scans.
+            this.consecutiveNullCount.delete(pair.id);
+            this.signalCooldown.delete(pair.id);
+          }
+        } else {
+          this.slog('DEBUG', `LogicArb market null for pair "${pair.market_a_slug}" / "${pair.market_b_slug}" (${nullCount}/${this.cfg.deadPairNullThreshold} consecutive nulls)`);
+        }
+        continue;
+      }
+
+      // Both markets returned data — reset the null counter.
+      this.consecutiveNullCount.set(pair.id, 0);
 
       const priceA = marketA.outcomePrices?.[0];
       const priceB = marketB.outcomePrices?.[0];
@@ -306,6 +367,15 @@ export class LogicArbService extends EventEmitter {
 
       if (net < this.cfg.minNetProfitUSD) continue;
 
+      // ── Signal cooldown ───────────────────────────────────────────────────
+      // Suppress re-emission for the same pair until cooldownMs has elapsed.
+      const lastSignaledAt = this.signalCooldown.get(pair.id) ?? 0;
+      const now = Date.now();
+      if (now - lastSignaledAt < this.cfg.cooldownMs) {
+        this.slog('DEBUG', `LogicArb ${pair.relationship} "${pair.market_a_slug}" / "${pair.market_b_slug}" suppressed — cooldown active (${Math.round((this.cfg.cooldownMs - (now - lastSignaledAt)) / 60_000)}m remaining)`);
+        continue;
+      }
+
       const signal: LogicArbSignal = {
         pairId:              pair.id,
         marketAConditionId:  pair.market_a_condition_id,
@@ -322,6 +392,7 @@ export class LogicArbService extends EventEmitter {
         trade:        logicArbTradeLegs(pair.relationship, priceA, priceB),
       };
 
+      this.signalCooldown.set(pair.id, now);
       this.slog('SIGNAL', `LogicArb ${pair.relationship} "${pair.market_a_slug}" / "${pair.market_b_slug}" dev=${signal.deviation.toFixed(4)} net=$${net.toFixed(4)}`);
       this.emit('signal', signal);
     }

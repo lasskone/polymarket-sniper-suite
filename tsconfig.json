@@ -24,6 +24,7 @@
     "scripts/suggest-correlated-pairs.ts",
     "scripts/review-pair-suggestions.ts",
     "scripts/approve-pair-suggestion.ts",
+    "scripts/mark-suspect-trades.ts",
     "modules/**/*",
     "bot/**/*"
   ],

@@ -58,6 +58,26 @@ class DashboardEmitter extends EventEmitter {
       this.logs = this.logs.slice(0, this.maxLogs);
     }
 
+    // Mirror ERROR and WARN to structured stdout so they appear in Railway logs
+    // even when no WebSocket client is connected. INFO/DEBUG stay dashboard-only
+    // to avoid log spam (scan lines, heartbeats, etc.).
+    if (level === 'ERROR' || level === 'WARN') {
+      const payload: Record<string, unknown> = {
+        timestamp: entry.timestamp,
+        level,
+        source:    'dashboard',
+        message,
+      };
+      if (data !== undefined) payload.data = data;
+      // Use console.error for ERROR (stderr) so Railway level-filters work,
+      // console.warn for WARN (also stderr on Node, but distinct from error).
+      if (level === 'ERROR') {
+        console.error(JSON.stringify(payload));
+      } else {
+        console.warn(JSON.stringify(payload));
+      }
+    }
+
     this.emit('log', entry);
   }
 

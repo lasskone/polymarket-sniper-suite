@@ -216,4 +216,11 @@ export interface NegRiskArbConfig {
   maxOutcomes: number;
   /** Override taker fee rate. @default NEGRISK_FEE_RATE */
   feeRate: number;
+  /**
+   * Minimum time (ms) that must pass before re-emitting a signal for the same
+   * NegRisk event. Prevents the same opportunity from flooding paper_trades on
+   * every 30-second scan cycle while the deviation persists.
+   * @default 1_800_000  (30 minutes)
+   */
+  cooldownMs: number;
 }

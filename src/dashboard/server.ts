@@ -63,7 +63,8 @@ async function queryPaperStats() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data, error } = await (db as any)
       .from('paper_trades')
-      .select('module, net_profit_usd, status, opened_at');
+      .select('module, net_profit_usd, status, opened_at')
+      .eq('suspect_duplicate', false);
 
     if (error || !data || !Array.isArray(data)) return emptyPaperStats();
 

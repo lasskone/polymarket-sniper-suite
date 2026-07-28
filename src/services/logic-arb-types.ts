@@ -108,6 +108,21 @@ export interface LogicArbConfig {
   scanIntervalMs: number;
   /** Fallback taker fee rate coefficient. @default LOGIC_ARB_FEE_RATE */
   feeRate: number;
+  /**
+   * Minimum time (ms) that must pass before re-emitting a signal for the same
+   * pair. Prevents the same still-valid opportunity from flooding paper_trades
+   * on every scan cycle.
+   * @default 1_800_000  (30 minutes)
+   */
+  cooldownMs: number;
+  /**
+   * Number of consecutive scan cycles in which both markets return null before
+   * the pair is auto-deactivated (active=false) in correlated_market_pairs.
+   * A null market typically means the underlying market has resolved or been
+   * delisted from the Gamma API.
+   * @default 5
+   */
+  deadPairNullThreshold: number;
 }
 
 /** Which tokens to buy on each leg to lock in the guaranteed profit. */
