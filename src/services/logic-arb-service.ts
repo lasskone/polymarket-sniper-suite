@@ -31,7 +31,7 @@
 
 import { EventEmitter } from 'events';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { GammaApiClient } from '../clients/gamma-api.js';
+import type { GammaApiClient, GammaMarket } from '../clients/gamma-api.js';
 import type { Database } from '../../modules/shared/database.types.js';
 import {
   LOGIC_ARB_FEE_RATE,
@@ -99,6 +99,34 @@ const DEFAULT_CONFIG: LogicArbConfig = {
   cooldownMs:           DEFAULT_COOLDOWN_MS,
   deadPairNullThreshold: DEFAULT_DEAD_PAIR_NULL_THRESHOLD,
 };
+
+// ============= Market validity helper =============
+
+/**
+ * Returns true when a Gamma API market response should be treated as a live,
+ * tradeable market for the given conditionId.
+ *
+ * Two failure modes require this guard:
+ *
+ * 1. **conditionId mismatch** — Gamma's `condition_id` query param is
+ *    unreliable.  When the requested conditionId is no longer indexed (e.g. the
+ *    market resolved and was removed from the active index), the API silently
+ *    ignores the filter and returns a default/random active market.  We detect
+ *    this by comparing the returned `conditionId` against what we requested.
+ *
+ * 2. **Market closed** — `closed: true` in the Gamma response means the market
+ *    has resolved and is no longer tradeable.  Even if the conditionId matches,
+ *    a closed market cannot be traded and should be treated as absent.
+ *
+ * @param market             - The value returned by getMarketByConditionId().
+ * @param expectedConditionId - The conditionId that was requested.
+ */
+function isValidMarket(market: GammaMarket | null, expectedConditionId: string): boolean {
+  if (!market) return false;
+  if (market.conditionId !== expectedConditionId) return false;   // Gamma returned wrong market
+  if (market.closed) return false;                                 // market has resolved
+  return true;
+}
 
 // ============= Service =============
 
@@ -297,25 +325,38 @@ export class LogicArbService extends EventEmitter {
 
     for (const pair of (pairs ?? []) as CorrelatedPairRow[]) {
       // Fetch prices for both markets in parallel.
-      const [marketA, marketB] = await Promise.all([
+      const [rawA, rawB] = await Promise.all([
         this.gammaApi.getMarketByConditionId(pair.market_a_condition_id),
         this.gammaApi.getMarketByConditionId(pair.market_b_condition_id),
       ]);
 
+      // ── Market validity check ──────────────────────────────────────────────
+      // Gamma's `condition_id` query param is unreliable: the API silently ignores
+      // it and returns a default result when the conditionId is not indexed.  We
+      // must therefore verify the conditionId of the returned market matches what
+      // we requested; a mismatch means the underlying market is no longer accessible.
+      // We also treat a closed market (resolved, no longer tradeable) as absent.
+      const marketA = isValidMarket(rawA, pair.market_a_condition_id) ? rawA as GammaMarket : null;
+      const marketB = isValidMarket(rawB, pair.market_b_condition_id) ? rawB as GammaMarket : null;
+
       // ── Dead-pair detection ────────────────────────────────────────────────
-      // If either market is null (delisted / resolved), increment the
-      // consecutive-null counter.  After deadPairNullThreshold consecutive
-      // null cycles, mark the pair inactive in the DB so it stops being loaded.
+      // If either market is absent (null return, conditionId mismatch, or closed),
+      // increment the consecutive-absent counter.  After deadPairNullThreshold
+      // consecutive absent cycles, mark the pair inactive in the DB.
       if (!marketA || !marketB) {
         const nullCount = (this.consecutiveNullCount.get(pair.id) ?? 0) + 1;
         this.consecutiveNullCount.set(pair.id, nullCount);
 
         if (nullCount >= this.cfg.deadPairNullThreshold) {
           this.slog('WARN', `LogicArb dead-pair detected — deactivating "${pair.market_a_slug}" / "${pair.market_b_slug}"`, {
-            pairId:    pair.id,
+            pairId:        pair.id,
             nullCount,
-            missingA:  !marketA,
-            missingB:  !marketB,
+            absentA:       !marketA,
+            absentB:       !marketB,
+            rawACondId:    rawA?.conditionId ?? null,
+            rawBCondId:    rawB?.conditionId ?? null,
+            rawAClosed:    rawA?.closed ?? null,
+            rawBClosed:    rawB?.closed ?? null,
           });
           // Update the DB row so it is excluded from future scans.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -331,12 +372,12 @@ export class LogicArbService extends EventEmitter {
             this.signalCooldown.delete(pair.id);
           }
         } else {
-          this.slog('DEBUG', `LogicArb market null for pair "${pair.market_a_slug}" / "${pair.market_b_slug}" (${nullCount}/${this.cfg.deadPairNullThreshold} consecutive nulls)`);
+          this.slog('DEBUG', `LogicArb market absent for pair "${pair.market_a_slug}" / "${pair.market_b_slug}" (${nullCount}/${this.cfg.deadPairNullThreshold} consecutive absent cycles)`);
         }
         continue;
       }
 
-      // Both markets returned data — reset the null counter.
+      // Both markets returned valid, matching, open data — reset the absent counter.
       this.consecutiveNullCount.set(pair.id, 0);
 
       const priceA = marketA.outcomePrices?.[0];

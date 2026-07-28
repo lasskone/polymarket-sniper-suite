@@ -57,16 +57,77 @@ function emptyPaperStats() {
   };
 }
 
+/** Page size for paginated paper_trades fetch. Supabase REST caps at 1000/request. */
+const PAPER_STATS_PAGE = 1000;
+
+/**
+ * Fetch all paper_trades rows (excluding suspect duplicates) using paginated
+ * requests to work around Supabase REST's default 1000-row cap.
+ *
+ * Falls back to fetching without the suspect_duplicate filter if the column
+ * doesn't exist yet (migration pending), and logs a warning.
+ */
+async function fetchAllPaperTrades(db: ReturnType<typeof getSupabaseClient>): Promise<Array<{
+  module: string;
+  net_profit_usd: string | number | null;
+  status: string | null;
+  opened_at: string;
+}>> {
+  const all: Array<{ module: string; net_profit_usd: string | number | null; status: string | null; opened_at: string }> = [];
+  let from = 0;
+  let useSuspectFilter = true;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let query = (db as any)
+      .from('paper_trades')
+      .select('module, net_profit_usd, status, opened_at')
+      .range(from, from + PAPER_STATS_PAGE - 1);
+
+    if (useSuspectFilter) {
+      query = query.eq('suspect_duplicate', false);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      // If the suspect_duplicate column doesn't exist (migration pending),
+      // retry once without the filter so stats still render.
+      if (useSuspectFilter && (
+        error.message?.includes('suspect_duplicate') ||
+        error.message?.includes('column') ||
+        (error as { code?: string }).code === '42703'
+      )) {
+        console.warn(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: 'WARN',
+          source: 'dashboard',
+          message: 'paper-stats: suspect_duplicate column missing — migration pending; returning unfiltered totals',
+        }));
+        useSuspectFilter = false;
+        from = 0;
+        all.length = 0;
+        continue;
+      }
+      break;  // other error — stop and return what we have
+    }
+
+    if (!data || !Array.isArray(data) || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAPER_STATS_PAGE) break;  // last page
+    from += PAPER_STATS_PAGE;
+  }
+
+  return all;
+}
+
 async function queryPaperStats() {
   try {
     const db = getSupabaseClient();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { data, error } = await (db as any)
-      .from('paper_trades')
-      .select('module, net_profit_usd, status, opened_at')
-      .eq('suspect_duplicate', false);
+    const data = await fetchAllPaperTrades(db);
 
-    if (error || !data || !Array.isArray(data)) return emptyPaperStats();
+    if (data.length === 0) return emptyPaperStats();
 
     const byModule: Record<string, ModuleStat | SportsbookStat> = {};
     const total = emptyModuleStat();

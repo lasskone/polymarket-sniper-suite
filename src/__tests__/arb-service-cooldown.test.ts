@@ -115,10 +115,13 @@ const MOCK_PAIR = {
 
 /**
  * Returns a market stub whose YES price is `yesPrice`.
+ * `conditionId` must match the pair's expected conditionId so that
+ * `isValidMarket()` treats it as valid (the real Gamma API is unreliable and
+ * the service now checks conditionId equality as the primary validity signal).
  * outcomePrices[0] = YES, outcomePrices[1] = NO.
  */
-function mockMarket(yesPrice: number) {
-  return { outcomePrices: [yesPrice, 1 - yesPrice] };
+function mockMarket(yesPrice: number, conditionId: string) {
+  return { conditionId, outcomePrices: [yesPrice, 1 - yesPrice], closed: false };
 }
 
 /**
@@ -175,10 +178,10 @@ describe('LogicArbService — cooldown', () => {
   it('emits signal on first scan and suppresses repeats within cooldownMs', async () => {
     const gammaApi = {
       getMarketByConditionId: vi.fn()
-        .mockResolvedValueOnce(mockMarket(0.65))   // market A, scan 1
-        .mockResolvedValueOnce(mockMarket(0.55))   // market B, scan 1
-        .mockResolvedValueOnce(mockMarket(0.65))   // market A, scan 2 (suppressed)
-        .mockResolvedValueOnce(mockMarket(0.55)),  // market B, scan 2 (suppressed)
+        .mockResolvedValueOnce(mockMarket(0.65, MOCK_PAIR.market_a_condition_id))  // market A, scan 1
+        .mockResolvedValueOnce(mockMarket(0.55, MOCK_PAIR.market_b_condition_id))  // market B, scan 1
+        .mockResolvedValueOnce(mockMarket(0.65, MOCK_PAIR.market_a_condition_id))  // market A, scan 2 (suppressed)
+        .mockResolvedValueOnce(mockMarket(0.55, MOCK_PAIR.market_b_condition_id)), // market B, scan 2 (suppressed)
     };
 
     const svc = new LogicArbService(
@@ -206,8 +209,14 @@ describe('LogicArbService — cooldown', () => {
   });
 
   it('re-emits signal after cooldownMs has elapsed', async () => {
+    // Alternating A/B calls: vi.fn().mockResolvedValue() returns the same value for all calls,
+    // but the service calls getMarketByConditionId for A then B on each scan.
+    // Both get the same price (0.65), which for mutually_exclusive gives pA+pB=1.30 > 1 → signal.
     const gammaApi = {
-      getMarketByConditionId: vi.fn().mockResolvedValue(mockMarket(0.65)),
+      getMarketByConditionId: vi.fn()
+        .mockImplementation((conditionId: string) =>
+          Promise.resolve(mockMarket(0.65, conditionId)),
+        ),
     };
 
     const COOLDOWN_MS = 30;  // very short, real-time wait in test
@@ -303,8 +312,8 @@ describe('LogicArbService — dead-pair deactivation', () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
         // Scan 2: both present — reset counter to 0
-        .mockResolvedValueOnce(mockMarket(0.65))
-        .mockResolvedValueOnce(mockMarket(0.55))
+        .mockResolvedValueOnce(mockMarket(0.65, MOCK_PAIR.market_a_condition_id))
+        .mockResolvedValueOnce(mockMarket(0.55, MOCK_PAIR.market_b_condition_id))
         // Scan 3: null again (count → 1, not 2 — was reset)
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null),
