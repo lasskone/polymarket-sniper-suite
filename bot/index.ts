@@ -77,6 +77,10 @@ process.on('unhandledRejection', (reason) => {
 //         this must happen before any async I/O (Supabase, APIs, etc.).
 // ---------------------------------------------------------------------------
 
+// Version banner — updated on each deploy to bust the nixpacks build cache and
+// confirm which commit is active in Railway logs.
+console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', source: 'main', message: 'Bot starting', version: '7f33511+' }));
+
 const PORT = parseInt(process.env.PORT || '8080', 10);
 console.log(`Starting dashboard server on port ${PORT}`);
 startDashboard(PORT);
