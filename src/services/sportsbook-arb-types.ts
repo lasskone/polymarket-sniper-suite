@@ -106,8 +106,51 @@ export interface SportsbookArbConfig {
    * @default 3
    */
   lookaheadDays: number;
-  /** Polling interval between full scans (ms). @default 300_000 (5 minutes) */
-  scanIntervalMs: number;
+  /**
+   * OddsPapi statusIds that indicate a match is currently in play.
+   * Defaults cover: In Progress (2), Half Time (3), Extra Time (4),
+   * Break Time (5), Penalties (6).
+   * Configurable in case OddsPapi changes their status convention.
+   */
+  liveStatusIds: readonly number[];
+  /**
+   * How often to refresh the fixture list from OddsPapi /fixtures.
+   * This is a cheap call (one per sportId per refresh) that tells us
+   * what's upcoming/live without fetching /odds.
+   * @default 3 * 60 * 60 * 1000  (3 hours)
+   */
+  fixtureRefreshIntervalMs: number;
+  /**
+   * How often to fetch /odds for fixtures currently in-play.
+   * Set low (1 min) because Polymarket closes ~15 min post-kickoff.
+   * @default 60_000  (1 minute)
+   */
+  liveOddsIntervalMs: number;
+  /**
+   * How often to fetch /odds for upcoming pregame fixtures.
+   * Set to 30 min — pregame prices don't move as fast as in-play.
+   * @default 30 * 60_000  (30 minutes)
+   */
+  pregameOddsIntervalMs: number;
+  /**
+   * Fixtures with kickoff further than this into the future are skipped
+   * entirely (no /odds polling). Fixtures within this window qualify for
+   * pregame polling.
+   * @default 24 * 60 * 60 * 1000  (24 hours)
+   */
+  pregameWindowMs: number;
+  /**
+   * Monthly OddsPapi request quota (total API calls across /fixtures + /odds).
+   * Configurable via ODDSPAPI_MONTHLY_QUOTA env var.
+   * @default 3000
+   */
+  monthlyQuota: number;
+  /**
+   * Fraction of monthlyQuota at which /odds polling halts with a warning.
+   * /fixtures calls continue (cheap; needed for fixture state).
+   * @default 0.9  (stop at 90% consumed)
+   */
+  quotaWarningThreshold: number;
   /**
    * Minimum edge (fairProb − polymarketPrice) required before checking net profit.
    * Guards against signal noise on very small pricing discrepancies.
@@ -121,6 +164,9 @@ export interface SportsbookArbConfig {
   /** Taker fee rate coefficient. @default SPORTS_FEE_RATE (0.05) */
   feeRate: number;
 }
+
+/** Polling tier for a fixture, determined by its status and kickoff time. */
+export type FixtureTier = 'live' | 'pregame' | 'skip';
 
 /** One side of a value-bet signal (the outcome being priced). */
 export interface SportsbookArbLeg {
@@ -234,7 +280,7 @@ export interface SportsbookArbSignal {
 
 /** Emitted after each scan cycle completes. */
 export interface SportsbookArbScanResult {
-  /** Total fixtures polled from OddsPapi with Betfair Exchange odds. */
+  /** Total fixtures in the local cache (populated from /fixtures calls). */
   fixturesTotal: number;
   /**
    * Fixtures successfully matched to at least one active Polymarket market
@@ -243,6 +289,18 @@ export interface SportsbookArbScanResult {
    * from the Gamma API rather than via OddsPapi.
    */
   fixturesMatchedToPolymarket: number;
+  /** Fixtures currently in-play (statusId is live). */
+  fixturesLive: number;
+  /** Fixtures in the pregame window (kickoff within pregameWindowMs). */
+  fixturesPregame: number;
+  /** Total /odds API calls made today (UTC). */
+  requestsToday: number;
+  /** Total /odds + /fixtures API calls made this month (UTC). */
+  requestsThisMonth: number;
+  /** Configured monthly quota. */
+  monthlyQuota: number;
+  /** True if requestsThisMonth ≥ monthlyQuota × quotaWarningThreshold. */
+  quotaNearCeiling: boolean;
   /** Timestamp of the scan. */
   scannedAt: number;
 }
