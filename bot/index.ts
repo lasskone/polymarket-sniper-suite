@@ -54,6 +54,7 @@ import { computeShares }             from '../src/services/dip-arb-sizing.js';
 import { SportsbookArbService }      from '../src/services/sportsbook-arb-service.js';
 import type { SportsbookArbSignal, SportsbookArbScanResult } from '../src/services/sportsbook-arb-types.js';
 import { runPaperTradeResolver }     from '../src/services/paper-trade-resolver.js';
+import { PairDiscoveryService }      from '../src/services/pair-discovery-service.js';
 
 // ---------------------------------------------------------------------------
 // Step 1: Error handlers — registered before anything else so no exception
@@ -928,6 +929,90 @@ async function main(): Promise<void> {
       name:    'paper-trade-resolver',
       enabled: process.env.ENABLE_SPORTSBOOK_ARB === 'true',
       run:     runPaperTradeResolver,
+    },
+    {
+      name:    'pair-discovery',
+      enabled: process.env.ENABLE_PAIR_DISCOVERY === 'true',
+      run:     async (): Promise<void> => {
+        // Reads from Gamma API + correlated_pair_suggestions.
+        // Writes ONLY to correlated_pair_suggestions (status='pending').
+        // NEVER touches correlated_market_pairs — approval stays 100% manual.
+
+        const rawHours = process.env.PAIR_DISCOVERY_INTERVAL_HOURS;
+        if (!rawHours) {
+          throw new Error(
+            '[pair-discovery] PAIR_DISCOVERY_INTERVAL_HOURS must be set when ENABLE_PAIR_DISCOVERY=true. ' +
+            'Set it to the number of hours between successive discovery runs (e.g. "6").',
+          );
+        }
+        const intervalHours = parseFloat(rawHours);
+        if (isNaN(intervalHours) || intervalHours <= 0) {
+          throw new Error(
+            `[pair-discovery] PAIR_DISCOVERY_INTERVAL_HOURS="${rawHours}" is not a positive number.`,
+          );
+        }
+
+        const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+        if (!anthropicApiKey) {
+          throw new Error(
+            '[pair-discovery] ANTHROPIC_API_KEY must be set when ENABLE_PAIR_DISCOVERY=true.',
+          );
+        }
+
+        const sdk = await PolymarketSDK.create({
+          privateKey: process.env.POLYMARKET_PRIVATE_KEY,
+        });
+
+        const discovery = new PairDiscoveryService(
+          sdk.gammaApi,
+          supabase,
+          anthropicApiKey,
+          { intervalMs: intervalHours * 60 * 60 * 1000 },
+        );
+
+        discovery.on('started', () => {
+          dashboardEmitter.log(
+            'INFO',
+            `PairDiscovery service started — interval: ${intervalHours}h ` +
+            `(writes to correlated_pair_suggestions only; approval is manual)`,
+          );
+        });
+
+        discovery.on('run-started', () => {
+          dashboardEmitter.log('INFO', 'PairDiscovery: discovery run started');
+        });
+
+        discovery.on('run-complete', (stats: { inserted: number; discarded: number; total: number; nextRunMs: number }) => {
+          const nextH = (stats.nextRunMs / 3_600_000).toFixed(2);
+          dashboardEmitter.log(
+            'INFO',
+            `PairDiscovery run complete: ${stats.inserted} suggestions inserted, ` +
+            `${stats.discarded} discarded of ${stats.total} candidates. ` +
+            `Next run in ${nextH}h. ` +
+            `Review: npx tsx scripts/review-pair-suggestions.ts`,
+          );
+        });
+
+        discovery.on('stopped', () => {
+          dashboardEmitter.log('INFO', 'PairDiscovery service stopped');
+        });
+
+        discovery.on('error', (err: Error) => {
+          dashboardEmitter.log('ERROR', `PairDiscovery error: ${err.message}`);
+        });
+
+        await discovery.start();
+
+        // Hold alive: PairDiscoveryService drives itself via setTimeout.
+        // Reject on the first unrecoverable error so runWithRestart resets.
+        try {
+          await new Promise<never>((_, reject) => {
+            discovery.once('error', (err: Error) => reject(err));
+          });
+        } finally {
+          discovery.stop();
+        }
+      },
     },
     // market-making: not yet implemented
     {
