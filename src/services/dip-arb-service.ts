@@ -329,31 +329,13 @@ export class DipArbService extends EventEmitter {
       this.log('No wallet configured - monitoring only');
     }
 
-    // Connect realtime service and wait for connection
-    this.realtimeService.connect();
-
-    // Wait for WebSocket connection (with timeout)
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        this.log('Warning: WebSocket connection timeout, proceeding anyway');
-        resolve();
-      }, 10000);
-
-      // Check if already connected
-      if (this.realtimeService.isConnected?.()) {
-        clearTimeout(timeout);
-        resolve();
-        return;
-      }
-
-      this.realtimeService.once('connected', () => {
-        clearTimeout(timeout);
-        this.log('WebSocket connected');
-        resolve();
-      });
-    });
-
-    // Subscribe to market orderbook
+    // Subscribe to market orderbook via ClobMarketWsClient (direct CLOB endpoint).
+    // Note: we do NOT call realtimeService.connect() here — that creates the legacy
+    // RealTimeDataClient (wss://ws-live-data.polymarket.com) which rejects the
+    // crypto_prices_chainlink subscription with "Invalid request body", closes with
+    // code 1006, and immediately reconnects with zero delay creating a tight storm.
+    // ClobMarketWsClient is lazily created inside subscribeMarkets() and connects
+    // to wss://ws-subscriptions-clob.polymarket.com/ws/market independently.
     this.log(`Subscribing to tokens: UP=${market.upTokenId.slice(0, 20)}..., DOWN=${market.downTokenId.slice(0, 20)}...`);
     this.marketSubscription = this.realtimeService.subscribeMarkets(
       [market.upTokenId, market.downTokenId],
@@ -372,26 +354,10 @@ export class DipArbService extends EventEmitter {
       }
     );
 
-    // Subscribe to Chainlink prices for the underlying asset
-    // Format: ETH -> ETH/USD
-    const chainlinkSymbol = `${market.underlying}/USD`;
-    console.log(`[DipArb] Subscribing to Chainlink prices: ${chainlinkSymbol}`);
-    this.chainlinkSubscription = this.realtimeService.subscribeCryptoChainlinkPrices(
-      [chainlinkSymbol],
-      {
-        onPrice: (price: CryptoPrice) => {
-          this.log(`Received ${price.symbol} Price: $${price.price.toFixed(2)}`); // Use this.log for consistency
-          this.handleChainlinkPriceUpdate(price);
-        },
-      }
-    );
-
     // Heartbeat to reassure user
     setInterval(() => {
       if (this.isRunning) {
-        const lastPrice = this.currentUnderlyingPrice > 0 ? this.currentUnderlyingPrice.toFixed(2) : 'Waiting';
-        const timeSinceUpdate = this.lastPriceUpdate > 0 ? Math.round((Date.now() - this.lastPriceUpdate) / 1000) + 's ago' : 'Never';
-        this.log(`💓 Monitoring active. Last Price: $${lastPrice} (${timeSinceUpdate})`);
+        this.log(`💓 Monitoring active`);
       }
     }, 60000);
 
