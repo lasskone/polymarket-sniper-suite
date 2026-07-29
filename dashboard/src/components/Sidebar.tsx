@@ -129,7 +129,7 @@ export function Sidebar({
 
         <div className="s-nav-section-label" style={{ marginTop: 8 }}>Risk-free arbitrage</div>
         <NavItem id="dipArb"       label="DipArb"       isLive={dipArbLive} />
-        <NavItem id="logicArb"     label="Logic arb"    isLive={logicArbLive} />
+        <NavItem id="logicArb"     label="Logic arb"    isLive={logicArbLive} page="logic-arb" />
 
         <div className="s-nav-section-label" style={{ marginTop: 8 }}>Directional</div>
         <NavItem id="sportsbookArb" label="Sportsbook arb" isLive={sbArbLive} />

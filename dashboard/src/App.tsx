@@ -6,6 +6,7 @@ import {
   ConnectionStatus,
   DipArbPanel,
   LogicArbPanel,
+  LogicArbPage,
   SportsbookArbPanel,
   PnLPanel,
   ActivityLog,
@@ -15,7 +16,7 @@ import {
   PositionsPage,
 } from './components';
 
-type Page = 'dashboard' | 'history' | 'positions';
+type Page = 'dashboard' | 'history' | 'positions' | 'logic-arb';
 
 function SectionLabel({ label, color }: { label: string; color: string }) {
   return (
@@ -63,7 +64,10 @@ function App() {
     sendCommand('toggleDryRun', { enabled: !isDryRun });
   };
 
-  // History / Positions are full-page (no sidebar)
+  // Full-page views (no sidebar)
+  if (currentPage === 'logic-arb') {
+    return <LogicArbPage onBack={() => setCurrentPage('dashboard')} config={config} state={state} />;
+  }
   if (currentPage === 'history') {
     return <HistoryPage onBack={() => setCurrentPage('dashboard')} />;
   }

@@ -245,7 +245,7 @@ function computeTradeStats(trades: TradeRow[]): TradeStats {
   return { totalCount: trades.length, totalSettledPnl, openCount, byModule };
 }
 
-async function fetchTradesHistory(): Promise<{ trades: TradeRow[]; total: number; stats: TradeStats }> {
+async function fetchTradesHistory(module?: string): Promise<{ trades: TradeRow[]; total: number; stats: TradeStats }> {
   const all: TradeRow[] = [];
   let from = 0;
   let useSuspectFilter = true;
@@ -259,6 +259,10 @@ async function fetchTradesHistory(): Promise<{ trades: TradeRow[]; total: number
       .select('id, module, market_label, net_profit_usd, status, opened_at, resolved_at, entry_price, shares')
       .order('opened_at', { ascending: false })
       .range(from, from + PAPER_STATS_PAGE - 1);
+
+    if (module) {
+      query = query.eq('module', module);
+    }
 
     if (useSuspectFilter) {
       query = query.eq('suspect_duplicate', false);
@@ -388,7 +392,8 @@ export function startDashboard(port = 3001): http.Server {
     // scenes to bypass Supabase REST's 1000-row cap.  Includes computed stats.
     if (req.method === 'GET' && url.pathname === '/api/trades') {
       try {
-        const result = await fetchTradesHistory();
+        const moduleFilter = url.searchParams.get('module') ?? undefined;
+        const result = await fetchTradesHistory(moduleFilter);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch {
@@ -475,6 +480,179 @@ export function startDashboard(port = 3001): http.Server {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
+    }
+
+    // ── GET /api/logic-arb/pairs ──────────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/logic-arb/pairs') {
+      const db = getSupabaseClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (db as any)
+        .from('correlated_market_pairs')
+        .select('id, market_a_slug, market_b_slug, market_a_condition_id, market_b_condition_id, relationship, notes, active, created_at')
+        .order('active', { ascending: false })
+        .order('created_at', { ascending: false });
+      if (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data ?? []));
+      return;
+    }
+
+    // ── GET /api/logic-arb/suggestions ───────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/logic-arb/suggestions') {
+      const db = getSupabaseClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (db as any)
+        .from('correlated_pair_suggestions')
+        .select('id, market_a_slug, market_b_slug, market_a_question, market_b_question, market_a_condition_id, market_b_condition_id, relationship, confidence, reasoning, status, created_at')
+        .eq('status', 'pending')
+        .order('confidence', { ascending: false });
+      if (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data ?? []));
+      return;
+    }
+
+    // ── GET /api/logic-arb/config ─────────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/logic-arb/config') {
+      const db = getSupabaseClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data } = await (db as any)
+        .from('bot_config')
+        .select('key, value')
+        .eq('module', 'logic-arb');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const kv = Object.fromEntries((data ?? []).map((r: any) => [r.key, r.value]));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        cooldownMs:              Number(kv['cooldown_ms']                ?? 1_800_000),
+        minNetProfitUSD:         Number(kv['min_net_profit_usd']         ?? 0.05),
+        deadPairNullThreshold:   Number(kv['dead_pair_null_threshold']   ?? 5),
+        deadPairClosedThreshold: Number(kv['dead_pair_closed_threshold'] ?? 1),
+      }));
+      return;
+    }
+
+    // ── PUT /api/logic-arb/config ─────────────────────────────────────────────
+    if (req.method === 'PUT' && url.pathname === '/api/logic-arb/config') {
+      let body: string;
+      try { body = await readBody(req); }
+      catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to read request body' }));
+        return;
+      }
+      let parsed: { cooldownMs?: number; minNetProfitUSD?: number; deadPairNullThreshold?: number; deadPairClosedThreshold?: number } = {};
+      try { parsed = JSON.parse(body); }
+      catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        return;
+      }
+      const upserts: Array<{ module: string; key: string; value: string }> = [];
+      if (parsed.cooldownMs !== undefined && parsed.cooldownMs > 0)
+        upserts.push({ module: 'logic-arb', key: 'cooldown_ms', value: String(parsed.cooldownMs) });
+      if (parsed.minNetProfitUSD !== undefined && parsed.minNetProfitUSD >= 0)
+        upserts.push({ module: 'logic-arb', key: 'min_net_profit_usd', value: String(parsed.minNetProfitUSD) });
+      if (parsed.deadPairNullThreshold !== undefined && parsed.deadPairNullThreshold > 0)
+        upserts.push({ module: 'logic-arb', key: 'dead_pair_null_threshold', value: String(parsed.deadPairNullThreshold) });
+      if (parsed.deadPairClosedThreshold !== undefined && parsed.deadPairClosedThreshold > 0)
+        upserts.push({ module: 'logic-arb', key: 'dead_pair_closed_threshold', value: String(parsed.deadPairClosedThreshold) });
+      if (upserts.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No valid fields provided' }));
+        return;
+      }
+      const db = getSupabaseClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error: dbError } = await (db as any)
+        .from('bot_config')
+        .upsert(upserts, { onConflict: 'module,key' });
+      if (dbError) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: dbError.message }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // ── PUT /api/pair-suggestions/:id/approve ─────────────────────────────────
+    {
+      const approveMatch = url.pathname.match(/^\/api\/pair-suggestions\/([^/]+)\/approve$/);
+      if (req.method === 'PUT' && approveMatch) {
+        const id = approveMatch[1];
+        const db = getSupabaseClient();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data: suggestion, error: fetchErr } = await (db as any)
+          .from('correlated_pair_suggestions')
+          .select('market_a_condition_id, market_b_condition_id, market_a_slug, market_b_slug, relationship, reasoning')
+          .eq('id', id)
+          .eq('status', 'pending')
+          .single();
+        if (fetchErr || !suggestion) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Suggestion not found or not pending' }));
+          return;
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { error: insertErr } = await (db as any)
+          .from('correlated_market_pairs')
+          .insert({
+            market_a_condition_id: suggestion.market_a_condition_id,
+            market_b_condition_id: suggestion.market_b_condition_id,
+            market_a_slug:         suggestion.market_a_slug,
+            market_b_slug:         suggestion.market_b_slug,
+            relationship:          suggestion.relationship,
+            notes:                 suggestion.reasoning,
+            active:                true,
+          });
+        const alreadyExists = insertErr?.code === '23505';
+        if (insertErr && !alreadyExists) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: insertErr.message }));
+          return;
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (db as any)
+          .from('correlated_pair_suggestions')
+          .update({ status: 'approved' })
+          .eq('id', id);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, alreadyExists }));
+        return;
+      }
+    }
+
+    // ── PUT /api/pair-suggestions/:id/reject ──────────────────────────────────
+    {
+      const rejectMatch = url.pathname.match(/^\/api\/pair-suggestions\/([^/]+)\/reject$/);
+      if (req.method === 'PUT' && rejectMatch) {
+        const id = rejectMatch[1];
+        const db = getSupabaseClient();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { error } = await (db as any)
+          .from('correlated_pair_suggestions')
+          .update({ status: 'rejected' })
+          .eq('id', id)
+          .eq('status', 'pending');
+        if (error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
     }
 
     // Serve static files from dashboard/dist

@@ -21,4 +21,5 @@ export { Sparkline } from './Sparkline';
 export { PositionsPage } from './PositionsPage';
 export { StrategyControls } from './StrategyControls';
 export { LogicArbPanel } from './LogicArbPanel';
+export { LogicArbPage } from './LogicArbPage';
 export { SportsbookArbPanel } from './SportsbookArbPanel';

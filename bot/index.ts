@@ -48,6 +48,7 @@ import {
   netProfitAfterFees as dipArbNetProfitAfterFees,
 }                                    from '../src/services/dip-arb-types.js';
 import { LogicArbService }           from '../src/services/logic-arb-service.js';
+import type { LogicArbConfig }       from '../src/services/logic-arb-types.js';
 import type { LogicArbSignal }       from '../src/services/logic-arb-types.js';
 import { computeShares }             from '../src/services/dip-arb-sizing.js';
 import { SportsbookArbService }      from '../src/services/sportsbook-arb-service.js';
@@ -508,10 +509,37 @@ async function main(): Promise<void> {
         });
 
         const logicArb = new LogicArbService(sdk.gammaApi, supabase);
+
+        // Read live config from bot_config table (module='logic-arb').
+        // Falls back to service defaults if no rows exist.
+        async function readLogicArbConfig(): Promise<Partial<LogicArbConfig>> {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const { data } = await (supabase as any)
+              .from('bot_config')
+              .select('key, value')
+              .eq('module', 'logic-arb');
+            if (!data?.length) return {};
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const kv = Object.fromEntries((data as any[]).map((r: any) => [r.key, r.value]));
+            const cfg: Partial<LogicArbConfig> = {};
+            if (kv['cooldown_ms'])                cfg.cooldownMs              = Number(kv['cooldown_ms']);
+            if (kv['min_net_profit_usd'])         cfg.minNetProfitUSD         = Number(kv['min_net_profit_usd']);
+            if (kv['dead_pair_null_threshold'])   cfg.deadPairNullThreshold   = Number(kv['dead_pair_null_threshold']);
+            if (kv['dead_pair_closed_threshold']) cfg.deadPairClosedThreshold = Number(kv['dead_pair_closed_threshold']);
+            return cfg;
+          } catch {
+            return {};
+          }
+        }
+
+        // Apply initial overrides on top of service defaults, then hot-reload
+        // every 2 minutes so dashboard config changes take effect without restart.
         logicArb.updateConfig({
           shares:          10,
           minNetProfitUSD: 0.05,
           scanIntervalMs:  60_000,
+          ...(await readLogicArbConfig()),
         });
 
         logicArb.on('started', () => {
@@ -615,6 +643,13 @@ async function main(): Promise<void> {
 
         await logicArb.start();
 
+        // Poll bot_config every 2 min and hot-apply changes (no restart needed).
+        const logicArbConfigTimer = setInterval(async () => {
+          try {
+            logicArb.updateConfig(await readLogicArbConfig());
+          } catch { /* ignore poll errors */ }
+        }, 2 * 60 * 1000);
+
         // Hold alive: LogicArbService drives itself via polling timer.
         // Reject on the first unrecoverable error so runWithRestart resets.
         try {
@@ -622,6 +657,7 @@ async function main(): Promise<void> {
             logicArb.once('error', (err: Error) => reject(err));
           });
         } finally {
+          clearInterval(logicArbConfigTimer);
           logicArb.stop();
         }
       },
