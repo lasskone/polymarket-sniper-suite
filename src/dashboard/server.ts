@@ -201,6 +201,96 @@ async function queryPaperStats() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Trades history types + helpers
+// ---------------------------------------------------------------------------
+
+interface TradeRow {
+  id: string;
+  module: string;
+  market_label: string;
+  net_profit_usd: string | number | null;
+  status: string;
+  opened_at: string;
+  resolved_at: string | null;
+  entry_price: string | number | null;
+  shares: string | number;
+}
+
+interface TradeStats {
+  totalCount: number;
+  totalSettledPnl: number;
+  openCount: number;
+  byModule: Record<string, { count: number; settledPnl: number; openCount: number }>;
+}
+
+function computeTradeStats(trades: TradeRow[]): TradeStats {
+  const byModule: Record<string, { count: number; settledPnl: number; openCount: number }> = {};
+  let totalSettledPnl = 0;
+  let openCount = 0;
+
+  for (const t of trades) {
+    if (!byModule[t.module]) byModule[t.module] = { count: 0, settledPnl: 0, openCount: 0 };
+    byModule[t.module].count++;
+    if (t.status === 'open') {
+      byModule[t.module].openCount++;
+      openCount++;
+    } else if (t.net_profit_usd != null) {
+      const pnl = Number(t.net_profit_usd);
+      byModule[t.module].settledPnl += pnl;
+      totalSettledPnl += pnl;
+    }
+  }
+
+  return { totalCount: trades.length, totalSettledPnl, openCount, byModule };
+}
+
+async function fetchTradesHistory(): Promise<{ trades: TradeRow[]; total: number; stats: TradeStats }> {
+  const all: TradeRow[] = [];
+  let from = 0;
+  let useSuspectFilter = true;
+  const db = getSupabaseClient();
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let query = (db as any)
+      .from('paper_trades')
+      .select('id, module, market_label, net_profit_usd, status, opened_at, resolved_at, entry_price, shares')
+      .order('opened_at', { ascending: false })
+      .range(from, from + PAPER_STATS_PAGE - 1);
+
+    if (useSuspectFilter) {
+      query = query.eq('suspect_duplicate', false);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      if (
+        useSuspectFilter && (
+          error.message?.includes('suspect_duplicate') ||
+          error.message?.includes('column') ||
+          (error as { code?: string }).code === '42703'
+        )
+      ) {
+        useSuspectFilter = false;
+        from = 0;
+        all.length = 0;
+        continue;
+      }
+      break;
+    }
+
+    if (!data || !Array.isArray(data) || data.length === 0) break;
+    all.push(...(data as TradeRow[]));
+    if (data.length < PAPER_STATS_PAGE) break;
+    from += PAPER_STATS_PAGE;
+  }
+
+  return { trades: all, total: all.length, stats: computeTradeStats(all) };
+}
+
 /** Read the entire request body as a string. */
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -290,6 +380,21 @@ export function startDashboard(port = 3001): http.Server {
       const stats = await queryPaperStats();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(stats));
+      return;
+    }
+
+    // ── GET /api/trades ───────────────────────────────────────────────────────
+    // Returns all paper_trades rows (newest first) with pagination behind the
+    // scenes to bypass Supabase REST's 1000-row cap.  Includes computed stats.
+    if (req.method === 'GET' && url.pathname === '/api/trades') {
+      try {
+        const result = await fetchTradesHistory();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to fetch trades' }));
+      }
       return;
     }
 
