@@ -22,6 +22,43 @@ let server: http.Server | null = null;
 let wss: WebSocketServer | null = null;
 
 // ---------------------------------------------------------------------------
+// Gamma slug cache — avoid hammering the API on every dashboard load
+// ---------------------------------------------------------------------------
+
+const SLUG_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+type SlugStatus = 'open' | 'closed' | 'not_found';
+const slugCache = new Map<string, { result: SlugStatus; ts: number }>();
+
+async function checkSlug(slug: string): Promise<SlugStatus> {
+  const cached = slugCache.get(slug);
+  if (cached && Date.now() - cached.ts < SLUG_CACHE_TTL_MS) return cached.result;
+
+  try {
+    const res = await fetch(
+      `https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}&limit=1`
+    );
+    if (!res.ok) {
+      const result: SlugStatus = 'not_found';
+      slugCache.set(slug, { result, ts: Date.now() });
+      return result;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const markets = await res.json() as any[];
+    const result: SlugStatus =
+      !markets || markets.length === 0
+        ? 'not_found'
+        : markets[0].closed === true
+          ? 'closed'
+          : 'open';
+    slugCache.set(slug, { result, ts: Date.now() });
+    return result;
+  } catch {
+    // Network error — don't cache, treat as open to avoid false expiry
+    return 'open';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Paper stats helper types
 // ---------------------------------------------------------------------------
 
@@ -503,7 +540,29 @@ export function startDashboard(port = 3001): http.Server {
 
     // ── GET /api/logic-arb/suggestions ───────────────────────────────────────
     if (req.method === 'GET' && url.pathname === '/api/logic-arb/suggestions') {
+      const statusParam = url.searchParams.get('status') ?? 'pending';
       const db = getSupabaseClient();
+
+      // For 'expired', just return the stored expired rows — no slug-checking needed.
+      if (statusParam === 'expired') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { data, error } = await (db as any)
+          .from('correlated_pair_suggestions')
+          .select('id, market_a_slug, market_b_slug, market_a_question, market_b_question, market_a_condition_id, market_b_condition_id, relationship, confidence, reasoning, status, created_at')
+          .eq('status', 'expired')
+          .order('created_at', { ascending: false });
+        if (error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data ?? []));
+        return;
+      }
+
+      // For 'pending' (default): fetch all pending, batch-check slugs via Gamma,
+      // mark closed/delisted ones as 'expired', return only the live ones.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data, error } = await (db as any)
         .from('correlated_pair_suggestions')
@@ -515,8 +574,55 @@ export function startDashboard(port = 3001): http.Server {
         res.end(JSON.stringify({ error: error.message }));
         return;
       }
+
+      const rows: Array<{
+        id: string;
+        market_a_slug: string;
+        market_b_slug: string;
+        [key: string]: unknown;
+      }> = data ?? [];
+
+      if (rows.length === 0) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify([]));
+        return;
+      }
+
+      // Collect unique slugs to check
+      const uniqueSlugs = [...new Set(rows.flatMap(r => [r.market_a_slug, r.market_b_slug]))];
+      // Check slugs concurrently (cache keeps this fast on repeated calls)
+      const slugResults = await Promise.all(uniqueSlugs.map(async s => [s, await checkSlug(s)] as const));
+      const slugStatusMap = new Map<string, SlugStatus>(slugResults);
+
+      // Partition: expired if either market is closed or not_found
+      const expiredIds: string[] = [];
+      const liveRows: typeof rows = [];
+      for (const row of rows) {
+        const aStatus = slugStatusMap.get(row.market_a_slug) ?? 'open';
+        const bStatus = slugStatusMap.get(row.market_b_slug) ?? 'open';
+        if (aStatus !== 'open' || bStatus !== 'open') {
+          expiredIds.push(row.id);
+        } else {
+          liveRows.push(row);
+        }
+      }
+
+      // Mark expired in DB (best-effort — ignore if 'expired' not yet in constraint)
+      if (expiredIds.length > 0) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (db as any)
+            .from('correlated_pair_suggestions')
+            .update({ status: 'expired' })
+            .in('id', expiredIds);
+        } catch {
+          // Migration not yet applied — expired suggestions stay pending but are
+          // still excluded from the response so the queue stays clean.
+        }
+      }
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(data ?? []));
+      res.end(JSON.stringify(liveRows));
       return;
     }
 

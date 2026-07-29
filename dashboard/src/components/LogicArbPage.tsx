@@ -329,6 +329,9 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
   const [actioning, setActioning]     = useState<string | null>(null);
   const [actionErr, setActionErr]     = useState<string | null>(null);
   const [pairsFilter, setPairsFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [suggestionsTab, setSuggestionsTab] = useState<'pending' | 'expired'>('pending');
+  const [expiredSuggestions, setExpiredSuggestions] = useState<SuggestionRow[]>([]);
+  const [loadingExpired, setLoadingExpired] = useState(false);
   const [expandedReasoning, setExpandedReasoning] = useState<string | null>(null);
 
   const fetchAll = useCallback(async () => {
@@ -349,6 +352,23 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
       setLoading(false);
     }
   }, []);
+
+  const fetchExpired = useCallback(async () => {
+    setLoadingExpired(true);
+    try {
+      const res = await fetch('/api/logic-arb/suggestions?status=expired').then(r => r.json());
+      setExpiredSuggestions(Array.isArray(res) ? res : []);
+    } finally {
+      setLoadingExpired(false);
+    }
+  }, []);
+
+  const handleSuggestionsTabChange = useCallback((tab: 'pending' | 'expired') => {
+    setSuggestionsTab(tab);
+    if (tab === 'expired' && expiredSuggestions.length === 0) {
+      fetchExpired();
+    }
+  }, [expiredSuggestions.length, fetchExpired]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -470,24 +490,89 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
           )}
         </div>
 
-        {/* ── Section 2: Pending Suggestions ── */}
+        {/* ── Section 2: Suggestions ── */}
         <div className="s-card">
           <div className="px-5 pt-4 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
             <SectionHeader
-              title="Pending Suggestions"
-              count={suggestions.length}
+              title="Suggestions"
+              count={suggestionsTab === 'pending' ? suggestions.length : expiredSuggestions.length}
               extra={
                 <span className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>
                   Approve → inserts into tracked pairs · Reject → marks suggestion rejected
                 </span>
               }
             />
+            {/* Tab chips */}
+            <div className="flex gap-2 mt-2">
+              {(['pending', 'expired'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => handleSuggestionsTabChange(tab)}
+                  className="font-jb text-[10px] px-2.5 py-0.5 rounded-full"
+                  style={{
+                    background: suggestionsTab === tab ? 'var(--reticle)' : 'rgba(120,120,120,0.1)',
+                    color: suggestionsTab === tab ? '#000' : 'var(--text-muted)',
+                    border: `1px solid ${suggestionsTab === tab ? 'var(--reticle)' : 'var(--border-strong)'}`,
+                    cursor: 'pointer',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                  }}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
             {actionErr && (
               <p className="font-inter text-[10px] mt-1" style={{ color: 'var(--loss)' }}>{actionErr}</p>
             )}
           </div>
 
-          {suggestions.length === 0 ? (
+          {suggestionsTab === 'expired' ? (
+            loadingExpired ? (
+              <p className="px-5 py-6 font-inter text-xs text-center" style={{ color: 'var(--text-muted)' }}>Loading…</p>
+            ) : expiredSuggestions.length === 0 ? (
+              <p className="px-5 py-6 font-inter text-xs text-center" style={{ color: 'var(--text-muted)' }}>No expired suggestions</p>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 80px 80px 1fr', minWidth: 700, borderBottom: '1px solid var(--border)' }}>
+                  <TH>Market A</TH><TH>Market B</TH><TH>Rel</TH><TH right>Conf.</TH><TH>Reasoning</TH>
+                </div>
+                <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                  {expiredSuggestions.map((s, i) => (
+                    <div key={s.id} style={{
+                      display: 'grid', gridTemplateColumns: '1fr 1fr 80px 80px 1fr', minWidth: 700,
+                      background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
+                      borderBottom: '1px solid var(--border)', alignItems: 'start', opacity: 0.6,
+                    }}>
+                      <div className="py-2 px-3">
+                        <a href={polyLink(s.market_a_slug)} target="_blank" rel="noopener noreferrer"
+                          className="font-jb text-[10px] block truncate"
+                          style={{ color: 'var(--text-muted)', textDecoration: 'none' }} title={s.market_a_slug}>
+                          ↗ {s.market_a_slug}
+                        </a>
+                        <p className="font-inter text-[10px] mt-0.5 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>{s.market_a_question}</p>
+                      </div>
+                      <div className="py-2 px-3">
+                        <a href={polyLink(s.market_b_slug)} target="_blank" rel="noopener noreferrer"
+                          className="font-jb text-[10px] block truncate"
+                          style={{ color: 'var(--text-muted)', textDecoration: 'none' }} title={s.market_b_slug}>
+                          ↗ {s.market_b_slug}
+                        </a>
+                        <p className="font-inter text-[10px] mt-0.5 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>{s.market_b_question}</p>
+                      </div>
+                      <TD>
+                        <span className="font-jb text-[10px] px-1.5 py-0.5 rounded" style={{
+                          background: 'rgba(120,120,120,0.1)', border: '1px solid rgba(120,120,120,0.2)', color: 'var(--text-muted)',
+                        }}>{relLabel(s.relationship)}</span>
+                      </TD>
+                      <TD right><span style={{ color: 'var(--text-muted)' }}>{(Number(s.confidence) * 100).toFixed(0)}%</span></TD>
+                      <TD><span className="line-clamp-2">{s.reasoning}</span></TD>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          ) : suggestions.length === 0 ? (
             <p className="px-5 py-6 font-inter text-xs text-center" style={{ color: 'var(--text-muted)' }}>
               {loading ? 'Loading…' : 'No pending suggestions'}
             </p>
