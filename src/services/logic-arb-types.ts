@@ -116,13 +116,21 @@ export interface LogicArbConfig {
    */
   cooldownMs: number;
   /**
-   * Number of consecutive scan cycles in which both markets return null before
-   * the pair is auto-deactivated (active=false) in correlated_market_pairs.
-   * A null market typically means the underlying market has resolved or been
-   * delisted from the Gamma API.
+   * Number of consecutive scan cycles in which a slug lookup returns null
+   * (API error / market not indexed) before the pair is auto-deactivated.
+   * These are treated as potentially transient failures, so a higher threshold
+   * gives the API time to recover before permanently deactivating the pair.
    * @default 5
    */
   deadPairNullThreshold: number;
+  /**
+   * Number of consecutive scan cycles in which a market returns `closed: true`
+   * before the pair is auto-deactivated.  A closed market has definitively
+   * resolved and will never re-open, so this threshold can be much lower than
+   * deadPairNullThreshold.  Set to 1 to deactivate on the very first observation.
+   * @default 1
+   */
+  deadPairClosedThreshold: number;
 }
 
 /** Which tokens to buy on each leg to lock in the guaranteed profit. */

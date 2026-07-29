@@ -115,13 +115,17 @@ const MOCK_PAIR = {
 
 /**
  * Returns a market stub whose YES price is `yesPrice`.
- * `conditionId` must match the pair's expected conditionId so that
- * `isValidMarket()` treats it as valid (the real Gamma API is unreliable and
- * the service now checks conditionId equality as the primary validity signal).
  * outcomePrices[0] = YES, outcomePrices[1] = NO.
+ * No conditionId matching required — slug-based lookup is reliable and
+ * isValidMarket() no longer checks conditionId equality.
  */
-function mockMarket(yesPrice: number, conditionId: string) {
-  return { conditionId, outcomePrices: [yesPrice, 1 - yesPrice], closed: false };
+function mockMarket(yesPrice: number) {
+  return { outcomePrices: [yesPrice, 1 - yesPrice], closed: false };
+}
+
+/** Returns a market stub representing a definitively resolved (closed) market. */
+function mockClosedMarket() {
+  return { outcomePrices: [1, 0], closed: true };
 }
 
 /**
@@ -177,11 +181,11 @@ function waitForScans(svc: LogicArbService | NegRiskArbService, targetScans: num
 describe('LogicArbService — cooldown', () => {
   it('emits signal on first scan and suppresses repeats within cooldownMs', async () => {
     const gammaApi = {
-      getMarketByConditionId: vi.fn()
-        .mockResolvedValueOnce(mockMarket(0.65, MOCK_PAIR.market_a_condition_id))  // market A, scan 1
-        .mockResolvedValueOnce(mockMarket(0.55, MOCK_PAIR.market_b_condition_id))  // market B, scan 1
-        .mockResolvedValueOnce(mockMarket(0.65, MOCK_PAIR.market_a_condition_id))  // market A, scan 2 (suppressed)
-        .mockResolvedValueOnce(mockMarket(0.55, MOCK_PAIR.market_b_condition_id)), // market B, scan 2 (suppressed)
+      getMarketBySlug: vi.fn()
+        .mockResolvedValueOnce(mockMarket(0.65))  // market A, scan 1
+        .mockResolvedValueOnce(mockMarket(0.55))  // market B, scan 1
+        .mockResolvedValueOnce(mockMarket(0.65))  // market A, scan 2 (suppressed)
+        .mockResolvedValueOnce(mockMarket(0.55)), // market B, scan 2 (suppressed)
     };
 
     const svc = new LogicArbService(
@@ -209,13 +213,11 @@ describe('LogicArbService — cooldown', () => {
   });
 
   it('re-emits signal after cooldownMs has elapsed', async () => {
-    // Alternating A/B calls: vi.fn().mockResolvedValue() returns the same value for all calls,
-    // but the service calls getMarketByConditionId for A then B on each scan.
-    // Both get the same price (0.65), which for mutually_exclusive gives pA+pB=1.30 > 1 → signal.
+    // Both markets get price 0.65 → pA+pB=1.30 > 1 → mutually_exclusive signal.
     const gammaApi = {
-      getMarketByConditionId: vi.fn()
-        .mockImplementation((conditionId: string) =>
-          Promise.resolve(mockMarket(0.65, conditionId)),
+      getMarketBySlug: vi.fn()
+        .mockImplementation((_slug: string) =>
+          Promise.resolve(mockMarket(0.65)),
         ),
     };
 
@@ -248,10 +250,10 @@ describe('LogicArbService — cooldown', () => {
 // ── Dead-pair deactivation ─────────────────────────────────────────────────────
 
 describe('LogicArbService — dead-pair deactivation', () => {
-  it('marks pair inactive after deadPairNullThreshold consecutive null scans', async () => {
+  it('marks pair inactive after deadPairNullThreshold consecutive null scans (transient failure path)', async () => {
     const gammaApi = {
-      // Always returns null — simulates a resolved/delisted market.
-      getMarketByConditionId: vi.fn().mockResolvedValue(null),
+      // Always returns null — simulates a transient API failure or unlisted slug.
+      getMarketBySlug: vi.fn().mockResolvedValue(null),
     };
 
     const updateEq = vi.fn().mockResolvedValue({ error: null });
@@ -278,9 +280,9 @@ describe('LogicArbService — dead-pair deactivation', () => {
     expect(updateEq).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT deactivate before the threshold is reached', async () => {
+  it('does NOT deactivate before the null threshold is reached', async () => {
     const gammaApi = {
-      getMarketByConditionId: vi.fn().mockResolvedValue(null),
+      getMarketBySlug: vi.fn().mockResolvedValue(null),
     };
 
     const updateEq = vi.fn().mockResolvedValue({ error: null });
@@ -307,13 +309,13 @@ describe('LogicArbService — dead-pair deactivation', () => {
 
   it('resets null counter and does not deactivate when markets return data', async () => {
     const gammaApi = {
-      getMarketByConditionId: vi.fn()
+      getMarketBySlug: vi.fn()
         // Scan 1: both null (count → 1)
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
         // Scan 2: both present — reset counter to 0
-        .mockResolvedValueOnce(mockMarket(0.65, MOCK_PAIR.market_a_condition_id))
-        .mockResolvedValueOnce(mockMarket(0.55, MOCK_PAIR.market_b_condition_id))
+        .mockResolvedValueOnce(mockMarket(0.65))
+        .mockResolvedValueOnce(mockMarket(0.55))
         // Scan 3: null again (count → 1, not 2 — was reset)
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null),
@@ -338,6 +340,68 @@ describe('LogicArbService — dead-pair deactivation', () => {
     await done;
 
     // Counter was reset at scan 2, so scan 3 is only null-count=1 → no deactivation.
+    expect(updateEq).not.toHaveBeenCalled();
+  });
+
+  it('deactivates immediately when a market returns closed=true (fast path)', async () => {
+    const gammaApi = {
+      // Market A returns closed; market B returns a valid price.
+      // closed=true should trigger the fast deactivation path at threshold=1.
+      getMarketBySlug: vi.fn()
+        .mockResolvedValue(mockClosedMarket()),
+    };
+
+    const updateEq = vi.fn().mockResolvedValue({ error: null });
+
+    const svc = new LogicArbService(
+      gammaApi as any,
+      makeSupabaseStub([MOCK_PAIR], updateEq) as any,
+      async () => 400,
+    );
+
+    svc.updateConfig({
+      deadPairClosedThreshold: 1,   // deactivate on the very first closed observation
+      deadPairNullThreshold:   10,  // high — should NOT be the trigger
+      scanIntervalMs:          5,
+    });
+
+    // 1 scan is enough to trip the closed threshold.
+    const done = waitForScans(svc, 1);
+    await svc.start();
+    await done;
+
+    expect(updateEq).toHaveBeenCalledWith('id', MOCK_PAIR.id);
+    expect(updateEq).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT deactivate via closed path for null returns (transient failure stays in null path)', async () => {
+    // null returns should NOT trigger the closed threshold, even if the closed
+    // threshold is 1.  They must follow the null-threshold path independently.
+    const gammaApi = {
+      getMarketBySlug: vi.fn().mockResolvedValue(null),
+    };
+
+    const updateEq = vi.fn().mockResolvedValue({ error: null });
+
+    const svc = new LogicArbService(
+      gammaApi as any,
+      makeSupabaseStub([MOCK_PAIR], updateEq) as any,
+      async () => 400,
+    );
+
+    svc.updateConfig({
+      deadPairClosedThreshold: 1,   // would trigger if closed=true — but these are nulls
+      deadPairNullThreshold:   5,   // null path threshold (not reached yet)
+      scanIntervalMs:          5,
+    });
+
+    // Run 4 scans — enough to hit closedThreshold (1) many times IF nulls were
+    // mis-routed to the closed path, but below the null threshold (5).
+    const done = waitForScans(svc, 4);
+    await svc.start();
+    await done;
+
+    // Should NOT have deactivated: nulls must not trip the closed-threshold.
     expect(updateEq).not.toHaveBeenCalled();
   });
 });
