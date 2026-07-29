@@ -47,7 +47,6 @@ import {
   resolveEffectiveSumTarget,
   netProfitAfterFees as dipArbNetProfitAfterFees,
 }                                    from '../src/services/dip-arb-types.js';
-import { NegRiskArbService }         from '../src/services/negrisk-arb-service.js';
 import { LogicArbService }           from '../src/services/logic-arb-service.js';
 import type { LogicArbSignal }       from '../src/services/logic-arb-types.js';
 import { computeShares }             from '../src/services/dip-arb-sizing.js';
@@ -494,129 +493,6 @@ async function main(): Promise<void> {
           });
         } finally {
           await sdk.dipArb.stop();
-        }
-      },
-    },
-    {
-      name:    'negrisk-arb',
-      enabled: process.env.ENABLE_NEGRISK_ARB === 'true',
-      run:     async (): Promise<void> => {
-        // Reuse the SDK's already-initialised Gamma API client.
-        // NegRiskArbService is detection-only — no order execution yet.
-        // autoExecute is intentionally omitted from this module until CTF
-        // adapter integration is complete.
-        const sdk = await PolymarketSDK.create({
-          privateKey: process.env.POLYMARKET_PRIVATE_KEY,
-        });
-
-        const negRisk = new NegRiskArbService(sdk.gammaApi);
-        negRisk.updateConfig({
-          shares:          10,
-          minNetProfitUSD: 0.05,
-          scanIntervalMs:  30_000,
-          minOutcomes:     3,
-          maxOutcomes:     25,
-        });
-
-        negRisk.on('started', () => {
-          dashboardEmitter.log('INFO', 'NegRiskArb scanner started');
-          const cur = dashboardEmitter.getState();
-          if (cur) dashboardEmitter.updateState({
-            ...cur,
-            negRiskArb: { ...cur.negRiskArb, status: 'scanning' },
-          });
-        });
-
-        negRisk.on('scanned', (result: { eventsTotal: number; negRiskEvents: number }) => {
-          dashboardEmitter.log(
-            'INFO',
-            `NegRiskArb scanned ${result.eventsTotal} events, ` +
-            `${result.negRiskEvents} multi-outcome candidates`,
-          );
-          const cur = dashboardEmitter.getState();
-          if (cur) dashboardEmitter.updateState({
-            ...cur,
-            negRiskArb: {
-              ...cur.negRiskArb,
-              status:          'scanning',
-              eventsScanned:   result.eventsTotal,
-              candidatesFound: result.negRiskEvents,
-            },
-          });
-        });
-
-        negRisk.on('signal', (signal: {
-          eventTitle: string;
-          direction: string;
-          yesSum: number;
-          netProfitUSD: number;
-          shares: number;
-          outcomeCount: number;
-          deviation: number;
-        }) => {
-          dashboardEmitter.log(
-            'SIGNAL',
-            `NegRiskArb ${signal.direction.toUpperCase()} — "${signal.eventTitle}" ` +
-            `[${signal.outcomeCount} outcomes, Σ YES=${signal.yesSum.toFixed(4)}, ` +
-            `dev=${signal.deviation.toFixed(4)}, net $${signal.netProfitUSD.toFixed(4)}] ` +
-            `(paper mode — detection only)`,
-          );
-
-          // Record as paper trade (detection-only; always logged regardless of tradingMode).
-          // upsert with ignoreDuplicates silently skips duplicate rows that match the
-          // (module, market_label, date_trunc('minute', opened_at)) unique index.
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (supabase as any).from('paper_trades').upsert({
-            module:         'negrisk-arb',
-            market_label:  signal.eventTitle,
-            net_profit_usd: signal.netProfitUSD,
-            shares:         signal.shares,
-            metadata:       signal as unknown as Record<string, unknown>,
-            trading_mode:   cfg.tradingMode,
-          }, { onConflict: 'module,market_label,opened_minute', ignoreDuplicates: true }).then(({ error }: { error: { message: string } | null }) => {
-            if (error) {
-              dashboardEmitter.log('WARN', `NegRiskArb paper trade insert failed: ${error.message}`);
-            }
-          });
-
-          const cur = dashboardEmitter.getState();
-          if (cur) {
-            const newSignal = { ...signal, timestamp: new Date().toISOString() };
-            const prev = cur.negRiskArb.recentSignals ?? [];
-            dashboardEmitter.updateState({
-              ...cur,
-              negRiskArb: {
-                ...cur.negRiskArb,
-                lastSignal:    newSignal,
-                recentSignals: [newSignal, ...prev].slice(0, 10),
-              },
-            });
-          }
-        });
-
-        negRisk.on('stopped', () => {
-          dashboardEmitter.log('INFO', 'NegRiskArb scanner stopped');
-          const cur = dashboardEmitter.getState();
-          if (cur) dashboardEmitter.updateState({
-            ...cur,
-            negRiskArb: { ...cur.negRiskArb, status: 'idle' },
-          });
-        });
-
-        negRisk.on('error', (err: Error) => {
-          dashboardEmitter.log('ERROR', `NegRiskArb error: ${err.message}`);
-        });
-
-        await negRisk.start();
-
-        // Hold alive: NegRiskArbService drives itself via polling timer.
-        // Reject on the first unrecoverable error so runWithRestart resets.
-        try {
-          await new Promise<never>((_, reject) => {
-            negRisk.once('error', (err: Error) => reject(err));
-          });
-        } finally {
-          negRisk.stop();
         }
       },
     },

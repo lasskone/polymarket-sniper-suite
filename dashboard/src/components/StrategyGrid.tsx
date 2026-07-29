@@ -20,15 +20,6 @@ export function StrategyGrid({ state, config }: StrategyGridProps) {
       badgeColor: 'bg-green-500/20 text-green-400 border-green-500/30',
     },
     {
-      name: 'NegRisk',
-      icon: '⚖️',
-      enabled: config?.negRiskArb?.enabled ?? false,
-      trades: state?.negRiskArb?.candidatesFound ?? 0,
-      detail: 'Candidates',
-      color: 'from-orange-500/20 to-red-500/20',
-      badgeColor: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
-    },
-    {
       name: 'LogicArb',
       icon: '🔗',
       enabled: config?.logicArb?.enabled ?? false,
@@ -57,7 +48,7 @@ export function StrategyGrid({ state, config }: StrategyGridProps) {
           <span className="text-base">🎯</span>
           <span className="text-sm font-medium text-white">Strategies</span>
         </div>
-        <span className="text-[10px] text-gray-500">{activeCount}/4 active</span>
+        <span className="text-[10px] text-gray-500">{activeCount}/3 active</span>
       </div>
       <div className="grid grid-cols-2 gap-2">
         {strategies.map((s) => (

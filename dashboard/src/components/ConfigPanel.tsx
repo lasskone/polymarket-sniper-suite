@@ -224,7 +224,6 @@ export function ConfigPanel({ config }: ConfigPanelProps) {
           <div>
             <p className="font-jb text-[9px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>Strategies</p>
             <Row label="DipArb"        value={config.dipArb?.enabled ? 'Enabled' : 'Disabled'} />
-            <Row label="NegRisk Arb"   value={config.negRiskArb?.enabled ? 'Enabled' : 'Disabled'} />
             <Row label="Logic Arb"     value={config.logicArb?.enabled ? 'Enabled' : 'Disabled'} />
             <Row label="Sportsbook"    value={config.sportsbookArb?.enabled ? 'Enabled' : 'Disabled'} />
           </div>

@@ -54,7 +54,6 @@ export function StrategyControls({ config, onToggle }: StrategyControlsProps) {
             Detection-only (env flag)
           </p>
           <div className="space-y-3">
-            <ToggleRow label="NegRisk Arb"    enabled={config.negRiskArb?.enabled ?? false}    onChange={(v) => onToggle('negRiskArb', v)}    disabled />
             <ToggleRow label="Logic Arb"      enabled={config.logicArb?.enabled ?? false}      onChange={(v) => onToggle('logicArb', v)}      disabled />
             <ToggleRow label="Sportsbook Arb" enabled={config.sportsbookArb?.enabled ?? false} onChange={(v) => onToggle('sportsbookArb', v)} disabled />
           </div>

@@ -20,6 +20,5 @@ export { AnimatedCounter } from './AnimatedCounter';
 export { Sparkline } from './Sparkline';
 export { PositionsPage } from './PositionsPage';
 export { StrategyControls } from './StrategyControls';
-export { NegRiskArbPanel } from './NegRiskArbPanel';
 export { LogicArbPanel } from './LogicArbPanel';
 export { SportsbookArbPanel } from './SportsbookArbPanel';

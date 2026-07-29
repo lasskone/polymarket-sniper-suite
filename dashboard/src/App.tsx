@@ -5,7 +5,6 @@ import {
   Sidebar,
   ConnectionStatus,
   DipArbPanel,
-  NegRiskArbPanel,
   LogicArbPanel,
   SportsbookArbPanel,
   PnLPanel,
@@ -82,7 +81,6 @@ function App() {
   // Count active modules for topbar
   const activeModules = [
     config?.dipArb?.enabled,
-    config?.negRiskArb?.enabled,
     config?.logicArb?.enabled,
     config?.sportsbookArb?.enabled,
   ].filter(Boolean).length;
@@ -126,7 +124,7 @@ function App() {
             </span>
             <span style={{ color: 'var(--border-strong)' }}>│</span>
             <span style={{ color: activeModules > 0 ? 'var(--riskfree)' : 'var(--text-muted)' }}>
-              {activeModules}/4 modules active
+              {activeModules}/3 modules active
             </span>
           </div>
         </div>
@@ -137,9 +135,8 @@ function App() {
           {/* ── Risk-free arbitrage ── */}
           <section>
             <SectionLabel label="Risk-free arbitrage" color="var(--riskfree)" />
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <DipArbPanel state={state} config={config} paperStats={paperStats.byModule['dip-arb'] as import('./hooks/usePaperStats').ModuleStat | undefined} />
-              <NegRiskArbPanel state={state} paperStats={paperStats.byModule['negrisk-arb'] as import('./hooks/usePaperStats').ModuleStat | undefined} />
               <LogicArbPanel state={state} paperStats={paperStats.byModule['logic-arb'] as import('./hooks/usePaperStats').ModuleStat | undefined} />
             </div>
           </section>

@@ -55,7 +55,6 @@ export function Sidebar({
   const statusLabel = !connected ? 'OFFLINE' : isPaused ? 'PAUSED' : isDryRun ? 'DRY RUN' : 'LIVE';
 
   const dipArbLive   = !!(state?.dipArb?.status === 'active' || state?.dipArb?.marketName);
-  const negRiskLive  = state?.negRiskArb?.status === 'scanning';
   const logicArbLive = state?.logicArb?.status === 'scanning';
   const sbArbLive    = state?.sportsbookArb?.status === 'scanning';
 
@@ -130,7 +129,6 @@ export function Sidebar({
 
         <div className="s-nav-section-label" style={{ marginTop: 8 }}>Risk-free arbitrage</div>
         <NavItem id="dipArb"       label="DipArb"       isLive={dipArbLive} />
-        <NavItem id="negRiskArb"   label="NegRisk arb"  isLive={negRiskLive} />
         <NavItem id="logicArb"     label="Logic arb"    isLive={logicArbLive} />
 
         <div className="s-nav-section-label" style={{ marginTop: 8 }}>Directional</div>
