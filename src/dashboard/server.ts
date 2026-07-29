@@ -201,6 +201,16 @@ async function queryPaperStats() {
   }
 }
 
+/** Read the entire request body as a string. */
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
 function broadcast(message: WebSocketMessage): void {
   if (!wss) return;
   const data = JSON.stringify(message);
@@ -215,7 +225,7 @@ export function startDashboard(port = 3001): http.Server {
   server = http.createServer(async (req, res) => {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
@@ -280,6 +290,85 @@ export function startDashboard(port = 3001): http.Server {
       const stats = await queryPaperStats();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(stats));
+      return;
+    }
+
+    // ── PUT /api/config/pair-discovery ────────────────────────────────────────
+    // Writes enabled / interval_hours to bot_config table and immediately
+    // updates the in-process dashboardEmitter so WebSocket clients see the
+    // change without waiting for the next DB poll cycle.
+    if (req.method === 'PUT' && url.pathname === '/api/config/pair-discovery') {
+      let body: string;
+      try {
+        body = await readBody(req);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to read request body' }));
+        return;
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let parsed: { enabled?: boolean; interval_hours?: number } = {};
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        return;
+      }
+
+      const { enabled, interval_hours } = parsed;
+
+      if (
+        interval_hours !== undefined &&
+        (typeof interval_hours !== 'number' || !isFinite(interval_hours) || interval_hours <= 0)
+      ) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'interval_hours must be a positive number' }));
+        return;
+      }
+
+      const upserts: Array<{ module: string; key: string; value: string }> = [];
+      if (enabled !== undefined) {
+        upserts.push({ module: 'pair-discovery', key: 'enabled', value: String(Boolean(enabled)) });
+      }
+      if (interval_hours !== undefined) {
+        upserts.push({ module: 'pair-discovery', key: 'interval_hours', value: String(interval_hours) });
+      }
+
+      if (upserts.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No valid fields provided (expected: enabled, interval_hours)' }));
+        return;
+      }
+
+      const db = getSupabaseClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error: dbError } = await (db as any)
+        .from('bot_config')
+        .upsert(upserts, { onConflict: 'module,key' });
+
+      if (dbError) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: dbError.message }));
+        return;
+      }
+
+      // Mirror the change into the in-process config so WS clients see it immediately.
+      const currentConfig = dashboardEmitter.getConfig();
+      if (currentConfig) {
+        const existing = currentConfig.pairDiscovery ?? { enabled: false, intervalHours: 6 };
+        dashboardEmitter.updateConfig({
+          ...currentConfig,
+          pairDiscovery: {
+            enabled:       enabled      !== undefined ? Boolean(enabled)      : existing.enabled,
+            intervalHours: interval_hours !== undefined ? interval_hours : existing.intervalHours,
+          },
+        });
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 

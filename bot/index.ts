@@ -931,87 +931,151 @@ async function main(): Promise<void> {
       run:     runPaperTradeResolver,
     },
     {
+      // pair-discovery is ALWAYS enabled at boot so it can poll bot_config
+      // and start/stop/reschedule PairDiscoveryService without a redeploy.
+      // The module idles silently until the dashboard enables it.
+      // ANTHROPIC_API_KEY is only validated when a scan is about to run.
       name:    'pair-discovery',
-      enabled: process.env.ENABLE_PAIR_DISCOVERY === 'true',
+      enabled: true,
       run:     async (): Promise<void> => {
-        // Reads from Gamma API + correlated_pair_suggestions.
-        // Writes ONLY to correlated_pair_suggestions (status='pending').
-        // NEVER touches correlated_market_pairs — approval stays 100% manual.
+        const POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 
-        const rawHours = process.env.PAIR_DISCOVERY_INTERVAL_HOURS;
-        if (!rawHours) {
-          throw new Error(
-            '[pair-discovery] PAIR_DISCOVERY_INTERVAL_HOURS must be set when ENABLE_PAIR_DISCOVERY=true. ' +
-            'Set it to the number of hours between successive discovery runs (e.g. "6").',
-          );
+        let discovery: PairDiscoveryService | null = null;
+        let runningEnabled   = false;
+        let runningIntervalH = 0;
+
+        // ── helpers ──────────────────────────────────────────────────────────
+
+        async function readPairDiscoveryConfig(): Promise<{ enabled: boolean; intervalHours: number } | null> {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const { data, error } = await (supabase as any)
+              .from('bot_config')
+              .select('key, value')
+              .eq('module', 'pair-discovery');
+            if (error || !Array.isArray(data)) return null;
+            const rows = data as Array<{ key: string; value: string }>;
+            const enabledRow  = rows.find((r) => r.key === 'enabled');
+            const intervalRow = rows.find((r) => r.key === 'interval_hours');
+            const enabled      = enabledRow  ? enabledRow.value  === 'true' : false;
+            const intervalHours = intervalRow ? parseFloat(intervalRow.value) : 6;
+            if (isNaN(intervalHours) || intervalHours <= 0) return { enabled: false, intervalHours: 6 };
+            return { enabled, intervalHours };
+          } catch {
+            return null;  // transient error — keep current state
+          }
         }
-        const intervalHours = parseFloat(rawHours);
-        if (isNaN(intervalHours) || intervalHours <= 0) {
-          throw new Error(
-            `[pair-discovery] PAIR_DISCOVERY_INTERVAL_HOURS="${rawHours}" is not a positive number.`,
-          );
-        }
 
-        const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-        if (!anthropicApiKey) {
-          throw new Error(
-            '[pair-discovery] ANTHROPIC_API_KEY must be set when ENABLE_PAIR_DISCOVERY=true.',
-          );
-        }
-
-        const sdk = await PolymarketSDK.create({
-          privateKey: process.env.POLYMARKET_PRIVATE_KEY,
-        });
-
-        const discovery = new PairDiscoveryService(
-          sdk.gammaApi,
-          supabase,
-          anthropicApiKey,
-          { intervalMs: intervalHours * 60 * 60 * 1000 },
-        );
-
-        discovery.on('started', () => {
-          dashboardEmitter.log(
-            'INFO',
-            `PairDiscovery service started — interval: ${intervalHours}h ` +
-            `(writes to correlated_pair_suggestions only; approval is manual)`,
-          );
-        });
-
-        discovery.on('run-started', () => {
-          dashboardEmitter.log('INFO', 'PairDiscovery: discovery run started');
-        });
-
-        discovery.on('run-complete', (stats: { inserted: number; discarded: number; total: number; nextRunMs: number }) => {
-          const nextH = (stats.nextRunMs / 3_600_000).toFixed(2);
-          dashboardEmitter.log(
-            'INFO',
-            `PairDiscovery run complete: ${stats.inserted} suggestions inserted, ` +
-            `${stats.discarded} discarded of ${stats.total} candidates. ` +
-            `Next run in ${nextH}h. ` +
-            `Review: npx tsx scripts/review-pair-suggestions.ts`,
-          );
-        });
-
-        discovery.on('stopped', () => {
-          dashboardEmitter.log('INFO', 'PairDiscovery service stopped');
-        });
-
-        discovery.on('error', (err: Error) => {
-          dashboardEmitter.log('ERROR', `PairDiscovery error: ${err.message}`);
-        });
-
-        await discovery.start();
-
-        // Hold alive: PairDiscoveryService drives itself via setTimeout.
-        // Reject on the first unrecoverable error so runWithRestart resets.
-        try {
-          await new Promise<never>((_, reject) => {
-            discovery.once('error', (err: Error) => reject(err));
+        function wireDiscoveryEvents(svc: PairDiscoveryService, intervalH: number): void {
+          svc.on('started', () => {
+            dashboardEmitter.log(
+              'INFO',
+              `PairDiscovery service started — interval: ${intervalH}h ` +
+              `(writes to correlated_pair_suggestions only; approval is manual)`,
+            );
           });
-        } finally {
-          discovery.stop();
+          svc.on('run-started', () => {
+            dashboardEmitter.log('INFO', 'PairDiscovery: discovery run started');
+          });
+          svc.on('run-complete', (stats: { inserted: number; discarded: number; total: number; nextRunMs: number }) => {
+            const nextH = (stats.nextRunMs / 3_600_000).toFixed(2);
+            dashboardEmitter.log(
+              'INFO',
+              `PairDiscovery run complete: ${stats.inserted} suggestions inserted, ` +
+              `${stats.discarded} discarded of ${stats.total} candidates. ` +
+              `Next run in ${nextH}h. ` +
+              `Review: npx tsx scripts/review-pair-suggestions.ts`,
+            );
+          });
+          svc.on('stopped', () => {
+            dashboardEmitter.log('INFO', 'PairDiscovery service stopped');
+          });
+          svc.on('error', (err: Error) => {
+            dashboardEmitter.log('ERROR', `PairDiscovery error: ${err.message}`);
+          });
         }
+
+        async function startDiscovery(intervalH: number): Promise<void> {
+          const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+          if (!anthropicApiKey) {
+            dashboardEmitter.log(
+              'WARN',
+              'PairDiscovery: ANTHROPIC_API_KEY not set — cannot start scanning. ' +
+              'Set ANTHROPIC_API_KEY and re-enable from the dashboard.',
+            );
+            // Roll back in-memory enabled flag so next poll tries again cleanly.
+            runningEnabled = false;
+            return;
+          }
+          const sdk = await PolymarketSDK.create({
+            privateKey: process.env.POLYMARKET_PRIVATE_KEY,
+          });
+          const svc = new PairDiscoveryService(
+            sdk.gammaApi,
+            supabase,
+            anthropicApiKey,
+            { intervalMs: intervalH * 60 * 60 * 1000 },
+          );
+          wireDiscoveryEvents(svc, intervalH);
+          await svc.start();
+          discovery          = svc;
+          runningEnabled     = true;
+          runningIntervalH   = intervalH;
+          log.info('PairDiscovery started via dashboard config', { intervalH });
+        }
+
+        function stopDiscovery(): void {
+          if (discovery) {
+            discovery.stop();
+            discovery = null;
+          }
+          runningEnabled   = false;
+          runningIntervalH = 0;
+          log.info('PairDiscovery stopped via dashboard config');
+        }
+
+        async function applyConfig(dbCfg: { enabled: boolean; intervalHours: number } | null): Promise<void> {
+          if (!dbCfg) return;  // transient DB error — keep current state
+
+          const { enabled, intervalHours } = dbCfg;
+
+          // Always mirror latest config to the dashboard so the UI stays in sync.
+          const currentConfig = dashboardEmitter.getConfig();
+          if (currentConfig) {
+            dashboardEmitter.updateConfig({
+              ...currentConfig,
+              pairDiscovery: { enabled, intervalHours },
+            });
+          }
+
+          const intervalChanged = runningEnabled && runningIntervalH !== intervalHours;
+
+          if (enabled && (!runningEnabled || intervalChanged)) {
+            // Start (or restart with new interval).
+            if (discovery) stopDiscovery();
+            await startDiscovery(intervalHours);
+          } else if (!enabled && runningEnabled) {
+            stopDiscovery();
+          }
+          // else: state matches — nothing to do
+        }
+
+        // ── initial read ─────────────────────────────────────────────────────
+        const initialCfg = await readPairDiscoveryConfig();
+        await applyConfig(initialCfg);
+
+        // ── poll loop ─────────────────────────────────────────────────────────
+        while (!shuttingDown) {
+          await sleep(POLL_INTERVAL_MS);
+          const dbCfg = await readPairDiscoveryConfig();
+          await applyConfig(dbCfg);
+        }
+
+        // Cleanup on shutdown — cast needed: TS narrows to never after the poll loop
+        // because it reasons stopDiscovery() (which sets discovery=null) is the last
+        // assignment; the cast restores the actual runtime type.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (discovery as any)?.stop();
       },
     },
     // market-making: not yet implemented
@@ -1138,6 +1202,7 @@ async function main(): Promise<void> {
     sportsbookArb: { enabled: process.env.ENABLE_SPORTSBOOK_ARB === 'true' },
     directTrading: { enabled: false },
     binance:       { enabled: false },
+    pairDiscovery: { enabled: false, intervalHours: 6 },
     dryRun:        cfg.tradingMode !== 'live',
   };
 

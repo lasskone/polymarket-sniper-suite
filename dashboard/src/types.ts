@@ -192,6 +192,10 @@ export interface BotConfig {
   binance: {
     enabled: boolean;
   };
+  pairDiscovery: {
+    enabled: boolean;
+    intervalHours: number;
+  };
   dryRun: boolean;
 }
 
