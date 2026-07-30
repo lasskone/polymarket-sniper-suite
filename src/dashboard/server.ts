@@ -15,6 +15,7 @@ import { dashboardEmitter } from './state-emitter.js';
 import type { WebSocketMessage } from './types.js';
 import { loadHistory, getSession, getHistorySummary } from './session-history.js';
 import { getSupabaseClient } from '../../modules/shared/supabase-client.js';
+import { logicArbTradeLegs, logicArbDeviation } from '../services/logic-arb-types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -759,6 +760,208 @@ export function startDashboard(port = 3001): http.Server {
         res.end(JSON.stringify({ ok: true }));
         return;
       }
+    }
+
+    // ── GET /api/logic-arb/trades/detailed ───────────────────────────────────
+    // Returns every non-suspect logic-arb paper_trade with per-leg breakdown
+    // (side bought, market slug, fill price, $ notional) derived from the same
+    // logicArbTradeLegs / logicArbDeviation pure functions used elsewhere,
+    // plus a grouped summary by market pair with avg stats.
+    if (req.method === 'GET' && url.pathname === '/api/logic-arb/trades/detailed') {
+      try {
+        const db = getSupabaseClient();
+        const PAGE   = 1000;
+        const SHARES = 10;
+
+        type RawRow = {
+          id:             string;
+          opened_at:      string;
+          market_label:   string;
+          net_profit_usd: string | number | null;
+          metadata:       Record<string, unknown> | null;
+        };
+
+        const allRows: RawRow[] = [];
+        let from            = 0;
+        let useSuspectFilter = true;
+
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let q = (db as any)
+            .from('paper_trades')
+            .select('id, opened_at, market_label, net_profit_usd, metadata')
+            .eq('module', 'logic-arb')
+            .order('opened_at', { ascending: false })
+            .range(from, from + PAGE - 1);
+
+          if (useSuspectFilter) q = q.eq('suspect_duplicate', false);
+
+          const { data, error } = await q;
+
+          if (error) {
+            if (
+              useSuspectFilter && (
+                (error as { message?: string }).message?.includes('suspect_duplicate') ||
+                (error as { code?: string }).code === '42703'
+              )
+            ) {
+              useSuspectFilter = false;
+              from = 0;
+              allRows.length = 0;
+              continue;
+            }
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: (error as { message?: string }).message ?? 'DB error' }));
+            return;
+          }
+
+          if (!data || !Array.isArray(data) || data.length === 0) break;
+          allRows.push(...(data as RawRow[]));
+          if (data.length < PAGE) break;
+          from += PAGE;
+        }
+
+        type DetailedTrade = {
+          id:              string;
+          opened_at:       string;
+          market_pair_label: string;
+          relationship:    string;
+          priceA:          number;
+          priceB:          number;
+          legA: { token: string; action: string; marketSlug: string; fillPrice: number; notionalUsd: number };
+          legB: { token: string; action: string; marketSlug: string; fillPrice: number; notionalUsd: number };
+          totalInvestedUsd: number;
+          deviation:        number;
+          deviationPct:     number;
+          feeRate:          number;
+          netProfitUsd:     number;
+          shares:           number;
+        };
+
+        type PairAgg = {
+          marketPairLabel: string;
+          count:           number;
+          totalDev:        number;
+          totalInvested:   number;
+          totalProfit:     number;
+          relationships:   Set<string>;
+        };
+
+        const trades: DetailedTrade[] = [];
+        const pairMap = new Map<string, PairAgg>();
+
+        for (const row of allRows) {
+          const meta = row.metadata as {
+            relationship?: string;
+            priceA?:       number;
+            priceB?:       number;
+            deviation?:    number;
+            feeRate?:      number;
+            netProfitUSD?: number;
+            marketASlug?:  string;
+            marketBSlug?:  string;
+          } | null;
+
+          if (!meta || typeof meta.priceA !== 'number' || typeof meta.priceB !== 'number') continue;
+
+          const relationship = (meta.relationship ?? 'mutually_exclusive') as 'a_implies_b' | 'mutually_exclusive';
+          const priceA  = meta.priceA;
+          const priceB  = meta.priceB;
+          const feeRate = typeof meta.feeRate === 'number' ? meta.feeRate : 0.04;
+
+          const legs = logicArbTradeLegs(relationship, priceA, priceB);
+          const deviation = typeof meta.deviation === 'number'
+            ? meta.deviation
+            : logicArbDeviation(relationship, priceA, priceB);
+
+          const legAFill     = legs.legA.price;
+          const legBFill     = legs.legB.price;
+          const legANotional = SHARES * legAFill;
+          const legBNotional = SHARES * legBFill;
+          const totalInvested = legANotional + legBNotional;
+          const netProfit    = Number(row.net_profit_usd ?? meta.netProfitUSD ?? 0);
+
+          trades.push({
+            id:               row.id,
+            opened_at:        row.opened_at,
+            market_pair_label: row.market_label,
+            relationship,
+            priceA,
+            priceB,
+            legA: {
+              token:      legs.legA.token,
+              action:     `Buy ${legs.legA.token} on Market A`,
+              marketSlug: meta.marketASlug ?? '',
+              fillPrice:  legAFill,
+              notionalUsd: legANotional,
+            },
+            legB: {
+              token:      legs.legB.token,
+              action:     `Buy ${legs.legB.token} on Market B`,
+              marketSlug: meta.marketBSlug ?? '',
+              fillPrice:  legBFill,
+              notionalUsd: legBNotional,
+            },
+            totalInvestedUsd: totalInvested,
+            deviation,
+            deviationPct:     deviation * 100,
+            feeRate,
+            netProfitUsd:     netProfit,
+            shares:           SHARES,
+          });
+
+          const agg = pairMap.get(row.market_label) ?? {
+            marketPairLabel: row.market_label,
+            count:           0,
+            totalDev:        0,
+            totalInvested:   0,
+            totalProfit:     0,
+            relationships:   new Set<string>(),
+          };
+          agg.count++;
+          agg.totalDev      += deviation;
+          agg.totalInvested += totalInvested;
+          agg.totalProfit   += netProfit;
+          agg.relationships.add(relationship);
+          pairMap.set(row.market_label, agg);
+        }
+
+        const summary = Array.from(pairMap.values()).map(s => ({
+          marketPairLabel: s.marketPairLabel,
+          count:           s.count,
+          relationship:    s.relationships.size > 1
+            ? 'mixed'
+            : (Array.from(s.relationships)[0] ?? ''),
+          avgDeviationPct: (s.totalDev      / s.count) * 100,
+          avgInvestedUsd:   s.totalInvested  / s.count,
+          avgProfitUsd:     s.totalProfit    / s.count,
+          totalProfitUsd:   s.totalProfit,
+        })).sort((a, b) => b.count - a.count);
+
+        const grandCount    = trades.length;
+        const grandProfit   = trades.reduce((s, t) => s + t.netProfitUsd,     0);
+        const grandInvested = trades.reduce((s, t) => s + t.totalInvestedUsd, 0);
+        const grandDev      = trades.reduce((s, t) => s + t.deviation,        0);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          trades,
+          summary,
+          totals: {
+            count:           grandCount,
+            totalProfitUsd:  grandProfit,
+            totalInvestedUsd: grandInvested,
+            avgDeviationPct: grandCount > 0 ? (grandDev / grandCount) * 100 : 0,
+            avgProfitUsd:    grandCount > 0 ? grandProfit / grandCount : 0,
+          },
+        }));
+      } catch (err) {
+        console.error('[Dashboard] /api/logic-arb/trades/detailed error:', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      }
+      return;
     }
 
     // Serve static files from dashboard/dist

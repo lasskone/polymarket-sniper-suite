@@ -32,16 +32,52 @@ interface SuggestionRow {
   created_at: string;
 }
 
-interface TradeRow {
-  id: string;
-  module: string;
-  market_label: string;
-  net_profit_usd: number | null;
-  status: string;
-  opened_at: string;
-  resolved_at: string | null;
-  shares: number | null;
+type Relationship = 'a_implies_b' | 'mutually_exclusive';
+
+interface TradeLeg {
+  token:       'YES' | 'NO';
+  action:      string;      // e.g. "Buy NO on Market A"
+  marketSlug:  string;
+  fillPrice:   number;
+  notionalUsd: number;
 }
+
+interface DetailedTrade {
+  id:               string;
+  opened_at:        string;
+  market_pair_label: string;
+  relationship:     Relationship;
+  priceA:           number;
+  priceB:           number;
+  legA:             TradeLeg;
+  legB:             TradeLeg;
+  totalInvestedUsd: number;
+  deviation:        number;
+  deviationPct:     number;
+  feeRate:          number;
+  netProfitUsd:     number;
+  shares:           number;
+}
+
+interface PairSummary {
+  marketPairLabel: string;
+  count:           number;
+  relationship:    string;
+  avgDeviationPct: number;
+  avgInvestedUsd:  number;
+  avgProfitUsd:    number;
+  totalProfitUsd:  number;
+}
+
+interface DetailedTotals {
+  count:            number;
+  totalProfitUsd:   number;
+  totalInvestedUsd: number;
+  avgDeviationPct:  number;
+  avgProfitUsd:     number;
+}
+
+type SummarySortCol = 'count' | 'avgDeviationPct' | 'avgInvestedUsd' | 'avgProfitUsd' | 'totalProfitUsd';
 
 interface ArbConfig {
   cooldownMs: number;
@@ -322,7 +358,9 @@ interface LogicArbPageProps {
 export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
   const [pairs, setPairs]             = useState<PairRow[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionRow[]>([]);
-  const [trades, setTrades]           = useState<TradeRow[]>([]);
+  const [trades, setTrades]           = useState<DetailedTrade[]>([]);
+  const [tradeSummary, setTradeSummary] = useState<PairSummary[]>([]);
+  const [tradeTotals, setTradeTotals]   = useState<DetailedTotals | null>(null);
   const [totalTrades, setTotalTrades] = useState(0);
   const [settledPnl, setSettledPnl]   = useState(0);
   const [loading, setLoading]         = useState(true);
@@ -333,6 +371,8 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
   const [expiredSuggestions, setExpiredSuggestions] = useState<SuggestionRow[]>([]);
   const [loadingExpired, setLoadingExpired] = useState(false);
   const [expandedReasoning, setExpandedReasoning] = useState<string | null>(null);
+  const [expandedTrade, setExpandedTrade] = useState<string | null>(null);
+  const [summarySort, setSummarySort] = useState<{ col: SummarySortCol; dir: 'asc' | 'desc' }>({ col: 'count', dir: 'desc' });
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -340,14 +380,19 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
       const [pairsRes, suggestionsRes, tradesRes] = await Promise.all([
         fetch('/api/logic-arb/pairs').then(r => r.json()),
         fetch('/api/logic-arb/suggestions').then(r => r.json()),
-        fetch('/api/trades?module=logic-arb').then(r => r.json()),
+        fetch('/api/logic-arb/trades/detailed').then(r => r.json()) as Promise<{
+          trades:  DetailedTrade[];
+          summary: PairSummary[];
+          totals:  DetailedTotals;
+        }>,
       ]);
       setPairs(Array.isArray(pairsRes) ? pairsRes : []);
       setSuggestions(Array.isArray(suggestionsRes) ? suggestionsRes : []);
-      const t = tradesRes.trades ?? [];
-      setTrades(t);
-      setTotalTrades(tradesRes.total ?? t.length);
-      setSettledPnl(tradesRes.stats?.totalSettledPnl ?? 0);
+      setTrades(tradesRes.trades ?? []);
+      setTradeSummary(tradesRes.summary ?? []);
+      setTradeTotals(tradesRes.totals ?? null);
+      setTotalTrades(tradesRes.totals?.count ?? 0);
+      setSettledPnl(tradesRes.totals?.totalProfitUsd ?? 0);
     } finally {
       setLoading(false);
     }
@@ -772,7 +817,110 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
           )}
         </div>
 
-        {/* ── Section 3: Trade History ── */}
+        {/* ── Section 3: Summary by Market Pair ── */}
+        {tradeSummary.length > 0 && (() => {
+          // Sortable summary table
+          function sortSummary(rows: PairSummary[]): PairSummary[] {
+            const { col, dir } = summarySort;
+            return [...rows].sort((a, b) => {
+              const pick = (r: PairSummary): number => {
+                if (col === 'count')           return r.count;
+                if (col === 'avgDeviationPct') return r.avgDeviationPct;
+                if (col === 'avgInvestedUsd')  return r.avgInvestedUsd;
+                if (col === 'avgProfitUsd')    return r.avgProfitUsd;
+                return r.totalProfitUsd;
+              };
+              return dir === 'desc' ? pick(b) - pick(a) : pick(a) - pick(b);
+            });
+          }
+
+          function SortTH({ col, children, right }: { col: SummarySortCol; children: React.ReactNode; right?: boolean }) {
+            const active = summarySort.col === col;
+            return (
+              <button
+                onClick={() => setSummarySort(prev =>
+                  prev.col === col ? { col, dir: prev.dir === 'desc' ? 'asc' : 'desc' } : { col, dir: 'desc' }
+                )}
+                className="font-jb text-[9px] uppercase tracking-wider py-2 px-3 flex items-center gap-1"
+                style={{
+                  color: active ? 'var(--reticle)' : 'var(--text-muted)',
+                  textAlign: right ? 'right' : 'left',
+                  cursor: 'pointer', background: 'none', border: 'none', width: '100%',
+                  justifyContent: right ? 'flex-end' : 'flex-start',
+                }}
+              >
+                {children}
+                {active && <span style={{ opacity: 0.8 }}>{summarySort.dir === 'desc' ? '▼' : '▲'}</span>}
+              </button>
+            );
+          }
+
+          const sorted = sortSummary(tradeSummary);
+
+          return (
+            <div className="s-card">
+              <div className="px-5 pt-4 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
+                <SectionHeader
+                  title="Summary by Market Pair"
+                  count={tradeSummary.length}
+                  extra={
+                    tradeTotals && (
+                      <div className="flex items-center gap-3 font-jb text-[11px]">
+                        <span style={{ color: 'var(--text-muted)' }}>
+                          Avg dev <span style={{ color: 'var(--text-primary)' }}>{tradeTotals.avgDeviationPct.toFixed(2)}%</span>
+                        </span>
+                        <span style={{ color: 'var(--border-strong)' }}>│</span>
+                        <span style={{ color: tradeTotals.totalProfitUsd >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+                          Total P&L ${tradeTotals.totalProfitUsd.toFixed(2)}
+                        </span>
+                      </div>
+                    )
+                  }
+                />
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 60px 100px 110px 110px 110px', minWidth: 760, borderBottom: '1px solid var(--border)' }}>
+                  <TH>Market Pair</TH>
+                  <TH>Type</TH>
+                  <SortTH col="count" right>Cnt</SortTH>
+                  <SortTH col="avgDeviationPct" right>Avg Dev</SortTH>
+                  <SortTH col="avgInvestedUsd" right>Avg Invested</SortTH>
+                  <SortTH col="avgProfitUsd" right>Avg Profit</SortTH>
+                  <SortTH col="totalProfitUsd" right>Total P&L</SortTH>
+                </div>
+                <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                  {sorted.map((s, i) => (
+                    <div key={s.marketPairLabel} style={{
+                      display: 'grid', gridTemplateColumns: '1fr 80px 60px 100px 110px 110px 110px', minWidth: 760,
+                      background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
+                      borderBottom: '1px solid var(--border)', alignItems: 'center',
+                    }}>
+                      <div className="font-inter text-[11px] py-2 px-3 truncate" style={{ color: 'var(--text-secondary)' }} title={s.marketPairLabel}>
+                        {s.marketPairLabel}
+                      </div>
+                      <TD>
+                        <span className="font-jb text-[9px] px-1.5 py-0.5 rounded" style={{
+                          background: s.relationship === 'mutually_exclusive' ? 'rgba(239,68,68,0.1)' : s.relationship === 'a_implies_b' ? 'rgba(91,155,208,0.1)' : 'rgba(120,120,120,0.1)',
+                          border: `1px solid ${s.relationship === 'mutually_exclusive' ? 'rgba(239,68,68,0.2)' : s.relationship === 'a_implies_b' ? 'rgba(91,155,208,0.2)' : 'rgba(120,120,120,0.2)'}`,
+                          color: s.relationship === 'mutually_exclusive' ? '#ef4444' : s.relationship === 'a_implies_b' ? 'var(--riskfree)' : 'var(--text-muted)',
+                        }}>
+                          {s.relationship === 'a_implies_b' ? 'A→B' : s.relationship === 'mutually_exclusive' ? 'MUTEX' : 'MIXED'}
+                        </span>
+                      </TD>
+                      <TD right style={{ color: 'var(--text-primary)' }}>{s.count}</TD>
+                      <TD right style={{ color: 'var(--directional)' }}>{s.avgDeviationPct.toFixed(2)}%</TD>
+                      <TD right style={{ color: 'var(--text-secondary)' }}>${s.avgInvestedUsd.toFixed(2)}</TD>
+                      <TD right style={{ color: pnlColor(s.avgProfitUsd) }}>${s.avgProfitUsd.toFixed(4)}</TD>
+                      <TD right style={{ color: pnlColor(s.totalProfitUsd) }}>${s.totalProfitUsd.toFixed(2)}</TD>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── Section 4: Trade History ── */}
         <div className="s-card">
           <div className="px-5 pt-4 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
             <SectionHeader
@@ -792,47 +940,137 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
             </p>
           ) : (
             <div style={{ overflowX: 'auto' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 70px 50px 130px 130px', minWidth: 700, borderBottom: '1px solid var(--border)' }}>
+              {/* Table header */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px 100px 130px 20px', minWidth: 760, borderBottom: '1px solid var(--border)' }}>
                 <TH>Market / Pair</TH>
+                <TH>Type</TH>
+                <TH right>Dev %</TH>
+                <TH right>Invested</TH>
                 <TH right>Net P&L</TH>
-                <TH>Status</TH>
-                <TH right>Shares</TH>
                 <TH>Opened</TH>
-                <TH>Resolved</TH>
+                <TH>{''}</TH>
               </div>
-              <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+              <div style={{ maxHeight: 520, overflowY: 'auto' }}>
                 {trades.map((t, i) => {
-                  const pnl = t.net_profit_usd != null ? Number(t.net_profit_usd) : null;
+                  const isExpanded = expandedTrade === t.id;
                   return (
-                    <div key={t.id} style={{
-                      display: 'grid', gridTemplateColumns: '1fr 100px 70px 50px 130px 130px', minWidth: 700,
-                      background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
-                      borderBottom: '1px solid var(--border)', alignItems: 'center',
-                    }}>
-                      <TD style={{ color: 'var(--text-primary)' }}>
-                        <span title={t.market_label}>{t.market_label}</span>
-                      </TD>
-                      <TD right style={{ color: pnlColor(pnl) }}>
-                        {pnl != null ? `$${pnl.toFixed(4)}` : '—'}
-                      </TD>
-                      <TD>
-                        <span className="font-jb text-[9px] px-1.5 py-0.5 rounded-full" style={{
-                          background: t.status === 'open' ? 'rgba(91,155,208,0.12)' : 'rgba(120,120,120,0.08)',
-                          border: `1px solid ${t.status === 'open' ? 'rgba(91,155,208,0.25)' : 'rgba(120,120,120,0.2)'}`,
-                          color: t.status === 'open' ? 'var(--riskfree)' : 'var(--text-muted)',
+                    <div key={t.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      {/* Main row — click to expand */}
+                      <div
+                        onClick={() => setExpandedTrade(isExpanded ? null : t.id)}
+                        style={{
+                          display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px 100px 130px 20px',
+                          minWidth: 760,
+                          background: isExpanded
+                            ? 'rgba(255,77,46,0.05)'
+                            : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
+                          alignItems: 'center', cursor: 'pointer',
+                        }}
+                      >
+                        <TD style={{ color: 'var(--text-primary)' }}>
+                          <span title={t.market_pair_label}>{t.market_pair_label}</span>
+                        </TD>
+                        <TD>
+                          <span className="font-jb text-[9px] px-1.5 py-0.5 rounded" style={{
+                            background: t.relationship === 'mutually_exclusive' ? 'rgba(239,68,68,0.1)' : 'rgba(91,155,208,0.1)',
+                            border: `1px solid ${t.relationship === 'mutually_exclusive' ? 'rgba(239,68,68,0.2)' : 'rgba(91,155,208,0.2)'}`,
+                            color: t.relationship === 'mutually_exclusive' ? '#ef4444' : 'var(--riskfree)',
+                          }}>
+                            {relLabel(t.relationship)}
+                          </span>
+                        </TD>
+                        <TD right style={{ color: 'var(--directional)' }}>{t.deviationPct.toFixed(2)}%</TD>
+                        <TD right style={{ color: 'var(--text-secondary)' }}>${t.totalInvestedUsd.toFixed(2)}</TD>
+                        <TD right style={{ color: pnlColor(t.netProfitUsd) }}>${t.netProfitUsd.toFixed(4)}</TD>
+                        <TD style={{ color: 'var(--text-muted)' }}>{fmt(t.opened_at)}</TD>
+                        <div className="font-inter text-[10px] py-2 px-1 flex items-center justify-center" style={{ color: 'var(--text-muted)' }}>
+                          {isExpanded ? '▲' : '▼'}
+                        </div>
+                      </div>
+
+                      {/* Expanded detail panel */}
+                      {isExpanded && (
+                        <div style={{
+                          background: 'rgba(255,77,46,0.03)',
+                          borderTop: '1px solid rgba(255,77,46,0.12)',
+                          padding: '12px 16px',
                         }}>
-                          {t.status}
-                        </span>
-                      </TD>
-                      <TD right>{t.shares ?? '—'}</TD>
-                      <TD style={{ color: 'var(--text-muted)' }}>{fmt(t.opened_at)}</TD>
-                      <TD style={{ color: 'var(--text-muted)' }}>{t.resolved_at ? fmt(t.resolved_at) : '—'}</TD>
+                          {/* Two-column leg layout */}
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 10 }}>
+                            {[
+                              { label: 'Leg A', leg: t.legA },
+                              { label: 'Leg B', leg: t.legB },
+                            ].map(({ label, leg }) => (
+                              <div key={label} style={{
+                                background: 'rgba(255,255,255,0.03)',
+                                border: '1px solid var(--border)',
+                                borderRadius: 6, padding: '10px 12px',
+                              }}>
+                                <div className="font-jb text-[9px] uppercase tracking-wider mb-2" style={{ color: 'var(--reticle)' }}>
+                                  {label}
+                                </div>
+                                {/* Action badge */}
+                                <div className="mb-2">
+                                  <span className="font-jb text-[10px] px-2 py-0.5 rounded" style={{
+                                    background: leg.token === 'YES' ? 'rgba(74,222,128,0.12)' : 'rgba(239,68,68,0.10)',
+                                    border: `1px solid ${leg.token === 'YES' ? 'rgba(74,222,128,0.25)' : 'rgba(239,68,68,0.22)'}`,
+                                    color: leg.token === 'YES' ? 'var(--profit)' : '#ef4444',
+                                  }}>
+                                    {leg.action}
+                                  </span>
+                                </div>
+                                {/* Market slug link */}
+                                <a
+                                  href={polyLink(leg.marketSlug)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  className="font-jb text-[10px] block truncate mb-2"
+                                  style={{ color: 'var(--riskfree)', textDecoration: 'none' }}
+                                  title={leg.marketSlug}
+                                >
+                                  ↗ {leg.marketSlug}
+                                </a>
+                                {/* Price / notional */}
+                                <div className="font-jb text-[10px] space-y-0.5">
+                                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                    <span style={{ color: 'var(--text-muted)' }}>Fill price</span>
+                                    <span style={{ color: 'var(--text-primary)' }}>${leg.fillPrice.toFixed(4)}</span>
+                                  </div>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                    <span style={{ color: 'var(--text-muted)' }}>Notional (×{t.shares})</span>
+                                    <span style={{ color: 'var(--text-primary)' }}>${leg.notionalUsd.toFixed(4)}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {/* Footer row: totals + fee */}
+                          <div className="font-jb text-[10px] flex flex-wrap gap-4" style={{ color: 'var(--text-muted)' }}>
+                            <span>
+                              Total invested <span style={{ color: 'var(--text-primary)' }}>${t.totalInvestedUsd.toFixed(4)}</span>
+                            </span>
+                            <span style={{ color: 'var(--border-strong)' }}>│</span>
+                            <span>
+                              Deviation <span style={{ color: 'var(--directional)' }}>{t.deviationPct.toFixed(2)}%</span>
+                            </span>
+                            <span style={{ color: 'var(--border-strong)' }}>│</span>
+                            <span>
+                              Fee rate <span style={{ color: 'var(--text-secondary)' }}>{(t.feeRate * 100).toFixed(2)}%</span>
+                            </span>
+                            <span style={{ color: 'var(--border-strong)' }}>│</span>
+                            <span>
+                              Net profit <span style={{ color: pnlColor(t.netProfitUsd) }}>${t.netProfitUsd.toFixed(6)}</span>
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
               <div className="px-5 py-2 font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                Showing {trades.length} of {totalTrades} trades
+                Showing {trades.length} of {totalTrades} trades · click any row to expand leg details
               </div>
             </div>
           )}
