@@ -48,6 +48,7 @@ import {
   netProfitAfterFees as dipArbNetProfitAfterFees,
 }                                    from '../src/services/dip-arb-types.js';
 import { LogicArbService }           from '../src/services/logic-arb-service.js';
+import { executeLogicArbTrade }      from '../src/services/logic-arb-executor.js';
 import type { LogicArbConfig }       from '../src/services/logic-arb-types.js';
 import type { LogicArbSignal }       from '../src/services/logic-arb-types.js';
 import { computeShares }             from '../src/services/dip-arb-sizing.js';
@@ -382,15 +383,17 @@ async function main(): Promise<void> {
             if (!dipArbInsertedRounds.has(signal.roundId)) {
               dipArbInsertedRounds.add(signal.roundId);
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              (supabase as any).from('paper_trades').upsert({
+              (supabase as any).from('paper_trades').insert({
                 module:         'dip-arb',
                 market_label:  label,
                 net_profit_usd: netProfit,
                 shares:         signal.shares,
                 metadata:       signal as unknown as Record<string, unknown>,
                 trading_mode:   cfg.tradingMode,
-              }, { onConflict: 'module,market_label,opened_minute', ignoreDuplicates: true }).then(({ error }: { error: { message: string } | null }) => {
-                if (error) {
+              }).then(({ error }: { error: { code: string; message: string } | null }) => {
+                // 23505 = unique_violation: duplicate within the same minute — expected, safe to ignore.
+                // The partial index idx_paper_trades_dedup enforces dedup at the DB level.
+                if (error && error.code !== '23505') {
                   dashboardEmitter.log('WARN', `DipArb paper trade insert failed: ${error.message}`);
                 }
               });
@@ -508,6 +511,9 @@ async function main(): Promise<void> {
           privateKey: process.env.POLYMARKET_PRIVATE_KEY,
         });
 
+        // Store the SDK's TradingService so the signal handler can use it for live execution.
+        const logicArbTradingService = sdk.tradingService;
+
         const logicArb = new LogicArbService(sdk.gammaApi, supabase);
 
         // Read live config from bot_config table (module='logic-arb').
@@ -583,19 +589,21 @@ async function main(): Promise<void> {
           );
 
           // Record as paper trade (detection-only; always logged regardless of tradingMode).
-          // upsert with ignoreDuplicates silently skips duplicate rows that match the
-          // (module, market_label, date_trunc('minute', opened_at)) unique index.
+          // Uses plain insert — the partial unique index idx_paper_trades_dedup
+          // (WHERE suspect_duplicate = false) enforces dedup at the DB level.
+          // 23505 unique_violation = duplicate within the same minute, treated as non-error.
           const label = `${signal.marketASlug} / ${signal.marketBSlug}`;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (supabase as any).from('paper_trades').upsert({
+          (supabase as any).from('paper_trades').insert({
             module:         'logic-arb',
             market_label:  label,
             net_profit_usd: signal.netProfitUSD,
             shares:         signal.shares,
             metadata:       signal as unknown as Record<string, unknown>,
             trading_mode:   cfg.tradingMode,
-          }, { onConflict: 'module,market_label,opened_minute', ignoreDuplicates: true }).then(({ error }: { error: { message: string } | null }) => {
-            if (error) {
+          }).then(({ error }: { error: { code: string; message: string } | null }) => {
+            // 23505 = unique_violation: duplicate within the same minute — expected, safe to ignore.
+            if (error && error.code !== '23505') {
               dashboardEmitter.log('WARN', `LogicArb paper trade insert failed: ${error.message}`);
             }
           });
@@ -621,6 +629,63 @@ async function main(): Promise<void> {
                 recentSignals: [newSignal, ...prev].slice(0, 10),
               },
             });
+          }
+
+          // ── Live execution gate (all 3 conditions required) ───────────────
+          if (cfg.tradingMode === 'live') {
+            (async () => {
+              try {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const { data: cfgRows } = await (supabase as any)
+                  .from('bot_config')
+                  .select('key, value')
+                  .eq('module', 'logic-arb')
+                  .in('key', ['live_enabled', 'position_size_pct']);
+
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const kv = Object.fromEntries((cfgRows ?? []).map((r: any) => [r.key, r.value]));
+                const liveEnabled     = kv['live_enabled'] === 'true';
+                const positionSizePct = kv['position_size_pct'] ? Number(kv['position_size_pct']) : cfg.positionSizePct;
+
+                if (!liveEnabled) return;
+
+                // Check pair's live_eligible flag
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const { data: pair } = await (supabase as any)
+                  .from('correlated_market_pairs')
+                  .select('live_eligible')
+                  .eq('id', signal.pairId)
+                  .maybeSingle();
+
+                if (!pair?.live_eligible) return;
+
+                // All three conditions met — execute live trade
+                dashboardEmitter.log('INFO', `LogicArb live execution triggered for pair ${signal.pairId}`);
+
+                const result = await executeLogicArbTrade(signal, positionSizePct, {
+                  tradingService: logicArbTradingService,
+                  riskManager,
+                  supabase,
+                }, {
+                  maxSlippageBps:      50,
+                  fillTimeoutMs:       10_000,
+                  maxPositionSizeUsdc: cfg.maxPositionSizeUsdc,
+                });
+
+                if (result.status === 'success') {
+                  dashboardEmitter.log('TRADE',
+                    `LogicArb live FILLED: ${signal.marketASlug}/${signal.marketBSlug} ` +
+                    `${result.shares} shares, P&L $${result.realizedPnl.toFixed(4)}`);
+                } else if (result.status === 'unwind') {
+                  dashboardEmitter.log('WARN',
+                    `LogicArb live UNWIND: ${result.detail} (unwind ${result.unwindSuccess ? 'OK' : 'FAILED'})`);
+                } else {
+                  dashboardEmitter.log('WARN', `LogicArb live ABORTED [${result.reason}]: ${result.detail}`);
+                }
+              } catch (err) {
+                dashboardEmitter.log('ERROR', `LogicArb live execution error: ${String(err)}`);
+              }
+            })();
           }
         });
 

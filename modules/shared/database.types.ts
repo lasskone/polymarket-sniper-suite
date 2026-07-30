@@ -184,6 +184,7 @@ export interface Database {
           relationship: 'a_implies_b' | 'mutually_exclusive';
           notes: string | null;
           active: boolean;
+          live_eligible: boolean;
           created_at: string;
         };
         Insert: {
@@ -195,6 +196,7 @@ export interface Database {
           relationship: 'a_implies_b' | 'mutually_exclusive';
           notes?: string | null;
           active?: boolean;
+          live_eligible?: boolean;
           created_at?: string;
         };
         Update: Partial<Database['public']['Tables']['correlated_market_pairs']['Insert']>;

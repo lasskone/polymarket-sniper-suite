@@ -526,7 +526,7 @@ export function startDashboard(port = 3001): http.Server {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data, error } = await (db as any)
         .from('correlated_market_pairs')
-        .select('id, market_a_slug, market_b_slug, market_a_condition_id, market_b_condition_id, relationship, notes, active, created_at')
+        .select('id, market_a_slug, market_b_slug, market_a_condition_id, market_b_condition_id, relationship, notes, active, live_eligible, created_at')
         .order('active', { ascending: false })
         .order('created_at', { ascending: false });
       if (error) {
@@ -643,6 +643,8 @@ export function startDashboard(port = 3001): http.Server {
         minNetProfitUSD:         Number(kv['min_net_profit_usd']         ?? 0.05),
         deadPairNullThreshold:   Number(kv['dead_pair_null_threshold']   ?? 5),
         deadPairClosedThreshold: Number(kv['dead_pair_closed_threshold'] ?? 1),
+        liveEnabled:             kv['live_enabled'] === 'true',
+        positionSizePct:         Number(kv['position_size_pct']) || 2,
       }));
       return;
     }
@@ -656,7 +658,14 @@ export function startDashboard(port = 3001): http.Server {
         res.end(JSON.stringify({ error: 'Failed to read request body' }));
         return;
       }
-      let parsed: { cooldownMs?: number; minNetProfitUSD?: number; deadPairNullThreshold?: number; deadPairClosedThreshold?: number } = {};
+      let parsed: {
+        cooldownMs?: number;
+        minNetProfitUSD?: number;
+        deadPairNullThreshold?: number;
+        deadPairClosedThreshold?: number;
+        liveEnabled?: boolean;
+        positionSizePct?: number;
+      } = {};
       try { parsed = JSON.parse(body); }
       catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -672,6 +681,10 @@ export function startDashboard(port = 3001): http.Server {
         upserts.push({ module: 'logic-arb', key: 'dead_pair_null_threshold', value: String(parsed.deadPairNullThreshold) });
       if (parsed.deadPairClosedThreshold !== undefined && parsed.deadPairClosedThreshold > 0)
         upserts.push({ module: 'logic-arb', key: 'dead_pair_closed_threshold', value: String(parsed.deadPairClosedThreshold) });
+      if (parsed.liveEnabled !== undefined)
+        upserts.push({ module: 'logic-arb', key: 'live_enabled', value: String(parsed.liveEnabled) });
+      if (parsed.positionSizePct !== undefined && parsed.positionSizePct > 0)
+        upserts.push({ module: 'logic-arb', key: 'position_size_pct', value: String(parsed.positionSizePct) });
       if (upserts.length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'No valid fields provided' }));
@@ -682,6 +695,44 @@ export function startDashboard(port = 3001): http.Server {
       const { error: dbError } = await (db as any)
         .from('bot_config')
         .upsert(upserts, { onConflict: 'module,key' });
+      if (dbError) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: dbError.message }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // ── PUT /api/logic-arb/pairs/:id/live-eligible ───────────────────────────
+    if (req.method === 'PUT' && /^\/api\/logic-arb\/pairs\/[^/]+\/live-eligible$/.test(url.pathname)) {
+      const id = url.pathname.split('/')[4];
+      let body: string;
+      try { body = await readBody(req); }
+      catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to read request body' }));
+        return;
+      }
+      let parsed: { live_eligible?: boolean } = {};
+      try { parsed = JSON.parse(body); }
+      catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        return;
+      }
+      if (typeof parsed.live_eligible !== 'boolean') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'live_eligible must be a boolean' }));
+        return;
+      }
+      const db = getSupabaseClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error: dbError } = await (db as any)
+        .from('correlated_market_pairs')
+        .update({ live_eligible: parsed.live_eligible })
+        .eq('id', id);
       if (dbError) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: dbError.message }));
@@ -779,6 +830,7 @@ export function startDashboard(port = 3001): http.Server {
           market_label:   string;
           net_profit_usd: string | number | null;
           metadata:       Record<string, unknown> | null;
+          trading_mode:   string | null;
         };
 
         const allRows: RawRow[] = [];
@@ -790,7 +842,7 @@ export function startDashboard(port = 3001): http.Server {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let q = (db as any)
             .from('paper_trades')
-            .select('id, opened_at, market_label, net_profit_usd, metadata')
+            .select('id, opened_at, market_label, net_profit_usd, metadata, trading_mode')
             .eq('module', 'logic-arb')
             .order('opened_at', { ascending: false })
             .range(from, from + PAGE - 1);
@@ -837,6 +889,7 @@ export function startDashboard(port = 3001): http.Server {
           feeRate:          number;
           netProfitUsd:     number;
           shares:           number;
+          trading_mode:     string | null;
         };
 
         type PairAgg = {
@@ -909,6 +962,7 @@ export function startDashboard(port = 3001): http.Server {
             feeRate,
             netProfitUsd:     netProfit,
             shares:           SHARES,
+            trading_mode:     row.trading_mode ?? null,
           });
 
           const agg = pairMap.get(row.market_label) ?? {

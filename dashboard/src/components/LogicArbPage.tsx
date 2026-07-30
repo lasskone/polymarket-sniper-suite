@@ -14,6 +14,7 @@ interface PairRow {
   relationship: string;
   notes: string | null;
   active: boolean;
+  live_eligible: boolean;
   created_at: string;
 }
 
@@ -57,6 +58,7 @@ interface DetailedTrade {
   feeRate:          number;
   netProfitUsd:     number;
   shares:           number;
+  trading_mode?:    string;
 }
 
 interface PairSummary {
@@ -84,6 +86,8 @@ interface ArbConfig {
   minNetProfitUSD: number;
   deadPairNullThreshold: number;
   deadPairClosedThreshold: number;
+  liveEnabled: boolean;
+  positionSizePct: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +231,55 @@ function PairDiscoveryCard({ config }: { config: BotConfig }) {
 }
 
 // ---------------------------------------------------------------------------
+// ConfirmLiveModal — shown before enabling live trading master switch
+// ---------------------------------------------------------------------------
+
+interface ConfirmLiveModalProps {
+  onConfirm: () => void;
+  onCancel:  () => void;
+}
+
+function ConfirmLiveModal({ onConfirm, onCancel }: ConfirmLiveModalProps) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 999,
+      background: 'rgba(0,0,0,0.75)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <div style={{
+        background: 'var(--bg-secondary)', border: '1px solid rgba(239,68,68,0.4)',
+        borderRadius: 12, padding: '28px 32px', maxWidth: 440, width: '90%',
+      }}>
+        <h2 className="font-space text-base font-semibold mb-2" style={{ color: '#ef4444' }}>
+          Enable Live Trading — Logic Arb
+        </h2>
+        <p className="font-inter text-[12px] mb-4" style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          This enables real-money execution for Logic Arb pairs marked as live-eligible.
+          Orders will be placed on the Polymarket CLOB using your wallet.
+        </p>
+        <ul className="font-inter text-[11px] mb-5 space-y-1" style={{ color: 'var(--text-muted)' }}>
+          <li>Both legs must fill within 10 s or leg 1 is automatically sold</li>
+          <li>All three gates must be active: TRADING_MODE=live + this toggle + per-pair toggle</li>
+          <li>Start with small position sizes and monitor the Activity Log closely</li>
+        </ul>
+        <div className="flex gap-3 justify-end">
+          <button onClick={onCancel}
+            className="font-jb text-[11px] px-4 py-1.5 rounded"
+            style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-strong)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button onClick={onConfirm}
+            className="font-jb text-[11px] px-4 py-1.5 rounded"
+            style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', color: '#ef4444', cursor: 'pointer' }}>
+            I understand — Enable Live
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // LogicArb Config card
 // ---------------------------------------------------------------------------
 
@@ -236,9 +289,12 @@ function LogicArbConfigCard() {
   const [minProfit, setMinProfit]               = useState('0.05');
   const [nullThreshold, setNullThreshold]       = useState('5');
   const [closedThreshold, setClosedThreshold]   = useState('1');
-  const [saving, setSaving] = useState(false);
-  const [error, setError]   = useState<string | null>(null);
-  const [saved, setSaved]   = useState(false);
+  const [saving, setSaving]       = useState(false);
+  const [error, setError]         = useState<string | null>(null);
+  const [saved, setSaved]         = useState(false);
+  const [showLiveModal, setShowLiveModal] = useState(false);
+  const [liveEnabled, setLiveEnabled]     = useState(false);
+  const [posSizePct, setPosSizePct]       = useState('2');
 
   useEffect(() => {
     fetch('/api/logic-arb/config').then(r => r.json()).then((c: ArbConfig) => {
@@ -247,6 +303,8 @@ function LogicArbConfigCard() {
       setMinProfit(String(c.minNetProfitUSD));
       setNullThreshold(String(c.deadPairNullThreshold));
       setClosedThreshold(String(c.deadPairClosedThreshold));
+      setLiveEnabled(c.liveEnabled);
+      setPosSizePct(String(c.positionSizePct));
     });
   }, []);
 
@@ -255,7 +313,8 @@ function LogicArbConfigCard() {
     const mp = parseFloat(minProfit);
     const nt = parseInt(nullThreshold);
     const ct = parseInt(closedThreshold);
-    if (isNaN(cm) || cm <= 0 || isNaN(mp) || mp < 0 || isNaN(nt) || nt <= 0 || isNaN(ct) || ct <= 0) {
+    const ps = parseFloat(posSizePct);
+    if (isNaN(cm) || cm <= 0 || isNaN(mp) || mp < 0 || isNaN(nt) || nt <= 0 || isNaN(ct) || ct <= 0 || isNaN(ps) || ps <= 0) {
       setError('All fields must be positive numbers (minNetProfitUSD ≥ 0)');
       return;
     }
@@ -269,6 +328,8 @@ function LogicArbConfigCard() {
           minNetProfitUSD: mp,
           deadPairNullThreshold: nt,
           deadPairClosedThreshold: ct,
+          liveEnabled,
+          positionSizePct: ps,
         }),
       });
       if (!res.ok) {
@@ -277,7 +338,7 @@ function LogicArbConfigCard() {
       } else {
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
-        setCfg({ cooldownMs: cm * 60_000, minNetProfitUSD: mp, deadPairNullThreshold: nt, deadPairClosedThreshold: ct });
+        setCfg({ cooldownMs: cm * 60_000, minNetProfitUSD: mp, deadPairNullThreshold: nt, deadPairClosedThreshold: ct, liveEnabled, positionSizePct: ps });
       }
     } catch (e) { setError(String(e)); }
     finally { setSaving(false); }
@@ -309,6 +370,20 @@ function LogicArbConfigCard() {
 
   return (
     <div className="s-card">
+      {showLiveModal && (
+        <ConfirmLiveModal
+          onConfirm={async () => {
+            setShowLiveModal(false);
+            setLiveEnabled(true);
+            await fetch('/api/logic-arb/config', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ liveEnabled: true }),
+            });
+          }}
+          onCancel={() => setShowLiveModal(false)}
+        />
+      )}
       <div className="px-5 pt-4 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <h3 className="font-space text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Logic Arb Config</h3>
         <p className="font-inter text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
@@ -316,10 +391,50 @@ function LogicArbConfigCard() {
         </p>
       </div>
       <div className="px-5 py-3 space-y-0">
+        {/* Live Trading toggle */}
+        <div className="flex items-center justify-between py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div>
+            <p className="font-inter text-[12px]" style={{ color: liveEnabled ? '#ef4444' : 'var(--text-secondary)' }}>
+              Live Trading {liveEnabled && '⚠ ACTIVE'}
+            </p>
+            <p className="font-inter text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Master switch — requires TRADING_MODE=live + per-pair live_eligible
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              if (!liveEnabled) {
+                setShowLiveModal(true);
+              } else {
+                setLiveEnabled(false);
+                fetch('/api/logic-arb/config', {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ liveEnabled: false }),
+                });
+              }
+            }}
+            disabled={saving || !cfg}
+            className="relative inline-flex items-center rounded-full transition-colors duration-200 focus:outline-none"
+            style={{
+              width: 40, height: 22,
+              background: liveEnabled ? '#ef4444' : 'var(--border-strong)',
+              opacity: saving ? 0.6 : 1, cursor: saving ? 'not-allowed' : 'pointer', flexShrink: 0,
+            }}
+          >
+            <span style={{
+              display: 'block', width: 16, height: 16, borderRadius: '50%', background: 'white',
+              transform: liveEnabled ? 'translateX(20px)' : 'translateX(3px)',
+              transition: 'transform 0.2s',
+            }} />
+          </button>
+        </div>
         <Field label="Signal cooldown (min)" sub="Minutes before re-firing same pair signal"
           value={cooldownMin} onChange={setCooldownMin} />
         <Field label="Min net profit (USD)" sub="Minimum P&L after fees to emit a signal"
           value={minProfit} onChange={setMinProfit} />
+        <Field label="Position size (%)" sub="% of USDC balance per trade pair"
+          value={posSizePct} onChange={setPosSizePct} />
         <Field label="Dead-pair null threshold" sub="Null API responses before auto-deactivation"
           value={nullThreshold} onChange={setNullThreshold} />
         <Field label="Dead-pair closed threshold" sub="Closed-market responses before auto-deactivation"
@@ -759,17 +874,18 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
             </p>
           ) : (
             <div style={{ overflowX: 'auto' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 80px 64px 160px', minWidth: 700, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 80px 64px 80px 160px', minWidth: 780, borderBottom: '1px solid var(--border)' }}>
                 <TH>Market A</TH>
                 <TH>Market B</TH>
                 <TH>Relationship</TH>
                 <TH>Status</TH>
+                <TH>Live</TH>
                 <TH>Created</TH>
               </div>
               <div style={{ maxHeight: 400, overflowY: 'auto' }}>
                 {filteredPairs.map((p, i) => (
                   <div key={p.id} style={{
-                    display: 'grid', gridTemplateColumns: '1fr 1fr 80px 64px 160px', minWidth: 700,
+                    display: 'grid', gridTemplateColumns: '1fr 1fr 80px 64px 80px 160px', minWidth: 780,
                     background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)',
                     borderBottom: '1px solid var(--border)', alignItems: 'center',
                   }}>
@@ -808,6 +924,35 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
                       }}>
                         {p.active ? 'active' : 'inactive'}
                       </span>
+                    </TD>
+                    <TD>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const newVal = !p.live_eligible;
+                          setPairs(prev => prev.map(pp => pp.id === p.id ? { ...pp, live_eligible: newVal } : pp));
+                          const res = await fetch(`/api/logic-arb/pairs/${p.id}/live-eligible`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ live_eligible: newVal }),
+                          });
+                          if (!res.ok) {
+                            setPairs(prev => prev.map(pp => pp.id === p.id ? { ...pp, live_eligible: !newVal } : pp));
+                          }
+                        }}
+                        className="relative inline-flex items-center rounded-full transition-colors duration-200 focus:outline-none"
+                        style={{
+                          width: 32, height: 18,
+                          background: p.live_eligible ? 'rgba(74,222,128,0.6)' : 'var(--border-strong)',
+                          cursor: 'pointer', flexShrink: 0, border: 'none',
+                        }}
+                      >
+                        <span style={{
+                          display: 'block', width: 12, height: 12, borderRadius: '50%', background: 'white',
+                          transform: p.live_eligible ? 'translateX(16px)' : 'translateX(2px)',
+                          transition: 'transform 0.2s',
+                        }} />
+                      </button>
                     </TD>
                     <TD style={{ color: 'var(--text-muted)' }}>{fmt(p.created_at)}</TD>
                   </div>
@@ -969,6 +1114,12 @@ export function LogicArbPage({ onBack, config, state }: LogicArbPageProps) {
                       >
                         <TD style={{ color: 'var(--text-primary)' }}>
                           <span title={t.market_pair_label}>{t.market_pair_label}</span>
+                          {t.trading_mode === 'live' && (
+                            <span className="font-jb text-[8px] px-1 py-0.5 rounded ml-1" style={{
+                              background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)',
+                              color: '#ef4444', verticalAlign: 'middle',
+                            }}>LIVE</span>
+                          )}
                         </TD>
                         <TD>
                           <span className="font-jb text-[9px] px-1.5 py-0.5 rounded" style={{

@@ -201,6 +201,15 @@ export class RiskManager {
     }
   }
 
+  /**
+   * Manually trigger the circuit breaker to halt all further orders for today.
+   * Use when an unrecoverable trade state is detected (e.g. unwind double-failure).
+   */
+  async emergencyPause(module: string, reason: string): Promise<void> {
+    this.log.error('EMERGENCY PAUSE triggered', { module, reason });
+    await this.triggerCircuitBreaker(`[${module}] ${reason}`);
+  }
+
   // ── Private helpers ────────────────────────────────────────────────────────
 
   private todayKey(): string {
