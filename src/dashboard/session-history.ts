@@ -236,7 +236,7 @@ export function createSessionFromState(
     },
   };
   
-  const startingBalance = state.usdcBalance + state.usdcEBalance - state.totalPnL;
+  const startingBalance = (state.usdcBalance ?? 0) + (state.usdcEBalance ?? 0) - state.totalPnL;
   
   return {
     id: `session-${startTime}`,
@@ -245,7 +245,7 @@ export function createSessionFromState(
     durationMs,
     totalPnL: state.totalPnL,
     startingBalance: Math.max(0, startingBalance),
-    endingBalance: state.usdcBalance + state.usdcEBalance,
+    endingBalance: (state.usdcBalance ?? 0) + (state.usdcEBalance ?? 0),
     totalTrades: state.tradesExecuted,
     wins,
     losses,

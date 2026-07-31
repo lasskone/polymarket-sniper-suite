@@ -160,6 +160,73 @@ async function runWithRestart(
 }
 
 // ---------------------------------------------------------------------------
+// Periodic wallet balance poller
+// ---------------------------------------------------------------------------
+
+/**
+ * Polls Polymarket CLOB + Polygon RPC for real wallet balances and pushes them
+ * to the dashboard via dashboardEmitter.
+ *
+ * - POLYMARKET_PRIVATE_KEY not set → walletAddress/balances remain null ("—" in UI)
+ * - Key set but fetch fails → keeps last known value, logs WARN
+ * - Runs immediately on call, then every INTERVAL_MS
+ */
+function startBalancePoller(): NodeJS.Timeout {
+  const INTERVAL_MS = 60_000;   // 1 minute
+
+  async function fetchAndPush(): Promise<void> {
+    const privateKey = process.env.POLYMARKET_PRIVATE_KEY;
+    if (!privateKey) {
+      // Wallet not configured — keep null state (already set in initialBotState)
+      return;
+    }
+
+    try {
+      // Minimal SDK init — no WebSocket, just CLOB credential derivation
+      const { PolymarketSDK: SDK } = await import('../src/index.js');
+      const sdk = new SDK({ privateKey });
+      await sdk.initialize();
+
+      const walletAddress = sdk.tradingService.getAddress();
+
+      // USDC.e collateral balance (CLOB API — the Polymarket trading balance is USDC.e,
+      // contract 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174 on Polygon)
+      const { balance: usdcERaw } = await sdk.tradingService.getBalanceAllowance('COLLATERAL');
+      const usdcEBalance = parseFloat(usdcERaw);
+      // Native USDC (0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359) not fetched here —
+      // CLOB API only exposes USDC.e collateral. usdcBalance stays null.
+
+      // MATIC balance (onchain — Polygon public RPC, same as all other services)
+      let maticBalance: number | null = null;
+      try {
+        const { ethers } = await import('ethers');
+        const provider = new ethers.providers.JsonRpcProvider('https://polygon-rpc.com');
+        const maticWei = await provider.getBalance(walletAddress);
+        maticBalance = parseFloat(ethers.utils.formatEther(maticWei));
+      } catch {
+        // Non-fatal — MATIC fetch fails silently, USDCe still shown
+      }
+
+      const cur = dashboardEmitter.getState();
+      if (cur) {
+        dashboardEmitter.updateState({
+          ...cur,
+          walletAddress,
+          usdcEBalance,
+          maticBalance,
+        });
+      }
+    } catch (err) {
+      log.warn('Balance poll failed', { error: String(err) });
+    }
+  }
+
+  // Fire immediately, then on interval
+  void fetchAndPush();
+  return setInterval(() => { void fetchAndPush(); }, INTERVAL_MS);
+}
+
+// ---------------------------------------------------------------------------
 // Periodic status reporter
 // ---------------------------------------------------------------------------
 
@@ -1107,9 +1174,10 @@ async function main(): Promise<void> {
     merges:              0,
     redeems:             0,
     swaps:               0,
-    usdcBalance:         0,
-    usdcEBalance:        0,
-    maticBalance:        0,
+    walletAddress:       null,
+    usdcBalance:         null,
+    usdcEBalance:        null,
+    maticBalance:        null,
     unrealizedPnL:       0,
     btcTrend:            'neutral',
     ethTrend:            'neutral',
@@ -1193,8 +1261,9 @@ async function main(): Promise<void> {
     });
   }
 
-  // ── 8. Start periodic status reporter ────────────────────────────────────
-  const statusTimer = startStatusReporter(activeModules);
+  // ── 8. Start periodic status reporter + balance poller ───────────────────
+  const statusTimer  = startStatusReporter(activeModules);
+  const balanceTimer = startBalancePoller();
 
   // ── 9. Launch enabled modules concurrently ────────────────────────────────
   console.log('Starting modules...');
@@ -1213,6 +1282,7 @@ async function main(): Promise<void> {
   const results = await Promise.allSettled(modulePromises);
 
   clearInterval(statusTimer);
+  clearInterval(balanceTimer);
   clearInterval(keepAlive);
 
   // Log any unexpected module exits

@@ -76,9 +76,10 @@ export interface BotState {
   merges: number;
   redeems: number;
   swaps: number;
-  usdcBalance: number;
-  usdcEBalance: number;
-  maticBalance: number;
+  walletAddress: string | null;
+  usdcBalance: number | null;
+  usdcEBalance: number | null;
+  maticBalance: number | null;
   unrealizedPnL: number;
   btcTrend: 'up' | 'down' | 'neutral';
   ethTrend: 'up' | 'down' | 'neutral';

@@ -30,12 +30,14 @@ export function Header({ state, config, connected, onHistoryClick, onPositionsCl
   const isDryRun = config?.dryRun ?? true;
   const isPaused = state?.isPaused ?? false;
 
-  const walletAddress = '0xaF98e0638671abD5140Ad981Ff4c01869F3410de';
-  const shortWallet = `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}`;
+  const walletAddress = state?.walletAddress ?? null;
+  const shortWallet = walletAddress
+    ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}`
+    : 'not connected';
 
-  const usdc  = state?.usdcBalance  ?? 0;
-  const usdce = state?.usdcEBalance ?? 0;
-  const matic = state?.maticBalance ?? 0;
+  const usdc  = state?.usdcBalance;
+  const usdce = state?.usdcEBalance;
+  const matic = state?.maticBalance;
 
   const statusColor = !connected ? 'text-red-400' : isPaused ? 'text-yellow-400' : 'text-emerald-400';
   const statusLabel = !connected ? 'OFFLINE' : isPaused ? 'PAUSED' : 'RUNNING';
@@ -77,18 +79,18 @@ export function Header({ state, config, connected, onHistoryClick, onPositionsCl
         {/* Center: balances */}
         <div className="hidden lg:flex items-center gap-5 text-xs font-mono">
           <span className="text-white/25">USDC</span>
-          <span className="text-white/70">${usdc.toFixed(2)}</span>
+          <span className="text-white/70">{usdc != null ? `$${usdc.toFixed(2)}` : '—'}</span>
           <span className="text-white/15">│</span>
           <span className="text-white/25">USDCe</span>
-          <span className="text-white/70">${usdce.toFixed(2)}</span>
+          <span className="text-white/70">{usdce != null ? `$${usdce.toFixed(2)}` : '—'}</span>
           <span className="text-white/15">│</span>
           <span className="text-white/25">MATIC</span>
-          <span className="text-white/70">{matic.toFixed(3)}</span>
+          <span className="text-white/70">{matic != null ? matic.toFixed(3) : '—'}</span>
         </div>
 
         {/* Right: wallet + nav */}
         <div className="flex items-center gap-3 shrink-0">
-          <span className="hidden xl:block font-mono text-xs text-white/25">{shortWallet}</span>
+          <span className={`hidden xl:block font-mono text-xs ${walletAddress ? 'text-white/25' : 'text-red-400/50'}`}>{shortWallet}</span>
 
           <div className="h-4 w-px bg-white/10" />
 

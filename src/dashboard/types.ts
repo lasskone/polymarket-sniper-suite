@@ -40,10 +40,13 @@ export interface BotState {
   redeems: number;
   swaps: number;
 
-  // Balances
-  usdcBalance: number;
-  usdcEBalance: number;
-  maticBalance: number;
+  // Wallet — null means POLYMARKET_PRIVATE_KEY is not set
+  walletAddress: string | null;
+
+  // Balances — null means wallet not configured or first fetch not yet complete
+  usdcBalance: number | null;
+  usdcEBalance: number | null;
+  maticBalance: number | null;
   unrealizedPnL: number;
 
   // Analysis
